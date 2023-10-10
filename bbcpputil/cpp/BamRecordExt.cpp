@@ -681,5 +681,117 @@ GetBamOverlapQStartAndQStop(const SeqLib::BamRecord& record, const SeqLib::Genom
   return std::make_pair(RefPosToQueryPos(record, left), RefPosToQueryPos(record, right) + 1);
 }
 
+SeqLib::BamRecord BwaAlignment2BamRecord(const mem_aln_t& a, const std::string& name, const std::string& new_seq, uint8_t* qual) {
+  // instantiate the read
+  SeqLib::BamRecord b;
+  b.init();
+
+  b.shared_pointer()->core.tid = a.rid;
+  b.shared_pointer()->core.pos = a.pos;
+  b.shared_pointer()->core.qual = a.mapq;
+  b.shared_pointer()->core.flag = a.flag;
+  b.shared_pointer()->core.n_cigar = a.n_cigar;
+
+  // set dumy mate
+  b.shared_pointer()->core.mtid = -1;
+  b.shared_pointer()->core.mpos = -1;
+  b.shared_pointer()->core.isize = 0;
+
+  // if alignment is reverse, set it
+  if (a.is_rev)
+    b.shared_pointer()->core.flag |= BAM_FREVERSE;
+
+  // allocate all the data
+  b.shared_pointer()->core.l_qname = name.length() + 1;
+  b.shared_pointer()->core.l_qseq = new_seq.length(); //(seq.length()>>1) + seq.length() % 2; // 4-bit encoding
+  b.shared_pointer()->l_data = b.shared_pointer()->core.l_qname + (a.n_cigar<<2) + ((b.shared_pointer()->core.l_qseq+1)>>1) + (b.shared_pointer()->core.l_qseq);
+  b.shared_pointer().get()->data = (uint8_t*)malloc(b.shared_pointer().get()->l_data);
+
+  // allocate the qname
+  memcpy(b.shared_pointer()->data, name.c_str(), name.length() + 1);
+
+  // allocate the cigar. Reverse if aligned to neg strand, since mem_aln_t stores
+  // cigars relative to referemce string oreiatnion, not forward alignment
+  memcpy(b.shared_pointer()->data + b.shared_pointer()->core.l_qname, (uint8_t*)a.cigar, a.n_cigar<<2);
+
+  // convert N to S or H
+  int new_val =  BAM_CSOFT_CLIP;
+  uint32_t * cigr = bam_get_cigar(b.shared_pointer());
+  for (int k = 0; k < b.shared_pointer()->core.n_cigar; ++k) {
+    if ( (cigr[k] & BAM_CIGAR_MASK) == BAM_CREF_SKIP) {
+      cigr[k] &= ~BAM_CIGAR_MASK;
+      cigr[k] |= new_val;
+    }
+  }
+
+  // allocate the sequence
+  uint8_t* m_bases = b.shared_pointer()->data + b.shared_pointer()->core.l_qname + (b.shared_pointer()->core.n_cigar<<2);
+
+  // TODO move this out of bigger loop
+  int slen = b.shared_pointer()->core.l_qseq;
+  int j = 0;
+  if (a.is_rev) {
+    for (int i = slen-1; i >= 0; --i) {
+
+      // bad idea but works for now
+      // this is REV COMP things
+      uint8_t base = 15;
+      if (new_seq.at(i) == 'T')
+        base = 1;
+      else if (new_seq.at(i) == 'G')
+        base = 2;
+      else if (new_seq.at(i) == 'C')
+        base = 4;
+      else if (new_seq.at(i) == 'A')
+        base = 8;
+
+      m_bases[j >> 1] &= ~(0xF << ((~j & 1) << 2));   ///< zero out previous 4-bit base encoding
+      m_bases[j >> 1] |= base << ((~j & 1) << 2);  ///< insert new 4-bit base encoding
+      ++j;
+    }
+  } else {
+    for (int i = 0; i < slen; ++i) {
+      // bad idea but works for now
+      uint8_t base = 15;
+      if (new_seq.at(i) == 'A')
+        base = 1;
+      else if (new_seq.at(i) == 'C')
+        base = 2;
+      else if (new_seq.at(i) == 'G')
+        base = 4;
+      else if (new_seq.at(i) == 'T')
+        base = 8;
+
+      m_bases[i >> 1] &= ~(0xF << ((~i & 1) << 2));   ///< zero out previous 4-bit base encoding
+      m_bases[i >> 1] |= base << ((~i & 1) << 2);  ///< insert new 4-bit base encoding
+
+    }
+  }
+  if (a.is_rev) {
+    uint8_t* rev = (uint8_t *) malloc(slen); // this is the reverse complement of $ms
+    for (int i = 0; i < slen; ++i) rev[slen - 1 - i] = qual[i];
+    memcpy(bam_get_qual(b.shared_pointer()), rev, b.shared_pointer()->core.l_qseq); // dont copy /0 terminator
+    free(rev);
+  } else {
+    memcpy(bam_get_qual(b.shared_pointer()), qual, b.shared_pointer()->core.l_qseq); // dont copy /0 terminator
+  }
+
+
+  //b.AddIntTag("NA", ar.n); // number of matches
+  b.AddIntTag("NM", a.NM);
+
+  if (a.XA)
+    b.AddZTag("XA", std::string(a.XA));
+
+  // add num sub opt
+  //b.AddIntTag("SB", ar.a[i].sub_n);
+  b.AddIntTag("AS", a.score);
+
+  // count num secondaries
+
+  return b;
+
+}
+
 
 } //end namespace

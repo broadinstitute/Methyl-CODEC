@@ -76,15 +76,15 @@ class InsertSeq {
         mate_mpos = mate->core.mpos;
     return
         ((bam_read1 ^ bam_read2) && (mate_read1 ^ mate_read2)) &&
-            (bam_read1 != mate_read1) &&
-            (bam_secondary == mate_secondary) &&
-            (((bam_rev != mate_mrev) && (bam_mrev != mate_rev)) ||
-                ((bam_rev == mate_mrev) && (bam_mrev == mate_rev))) &&
-            (bam_proper == mate_proper) &&
-            !bam_unmap &&
-            !mate_unmap &&
-            (pos == mate_mpos) && (mpos == mate_pos) &&
-            (bam->core.mtid == mate->core.tid);
+            (bam_read1 != mate_read1); //&&
+//            (bam_secondary == mate_secondary) &&
+//            (((bam_rev != mate_mrev) && (bam_mrev != mate_rev)) ||
+//                ((bam_rev == mate_mrev) && (bam_mrev == mate_rev))) &&
+//            (bam_proper == mate_proper) &&
+//            !bam_unmap &&
+//            !mate_unmap &&
+//            (pos == mate_mpos) && (mpos == mate_pos) &&
+//            (bam->core.mtid == mate->core.tid);
   }
 
   void add_to_paired(BamRecord bam, BamRecord mate) {

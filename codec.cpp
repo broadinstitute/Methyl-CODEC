@@ -13,7 +13,8 @@
 
 int codec_demux(int argc, char **argv);
 int codec_trim(int argc, char **argv);
-int codec_consensus(int argc, char **argv);
+//int codec_consensus(int argc, char **argv);
+int codec_ms_align(int argc, char **argv);
 int codec_accuracy(int argc, char **argv);
 //int codec_filter(int argc, char ** argv);
 
@@ -26,6 +27,7 @@ int print_help()
   std::cout<< "Usage:   codec <command> [options]\n";
   std::cout<< "Common command:      demux                      de-multiplexing.\n";
   std::cout<< "                     trim                       trim CODEC adapter sequence.\n";
+  std::cout<< "                     ms-align                   align methylseq.\n";
   std::cout<< "                     call                       single fragment mutation caller.\n";
   std::cout<< "---------------------------------------------------\n";
   std::cout<< "Optional command:\n";
@@ -41,7 +43,7 @@ int main(int argc, char *argv[]) {
   if (argc < 2) return print_help();
   else if (strcmp(argv[1], "demux") == 0) ret = codec_demux(argc-1, argv+1);
   else if (strcmp(argv[1], "trim") == 0) ret = codec_trim(argc-1, argv+1);
-  else if (strcmp(argv[1], "consensus") == 0) ret = codec_consensus(argc-1, argv+1);
+  else if (strcmp(argv[1], "ms-align") == 0) ret = codec_ms_align(argc-1, argv+1);
   else if (strcmp(argv[1], "call") == 0) ret = codec_accuracy(argc-1, argv+1);
 //  else if (strcmp(argv[1], "filter") == 0) ret = codec_filter(argc-1, argv+1);
   else {

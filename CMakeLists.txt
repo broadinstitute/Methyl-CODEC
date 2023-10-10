@@ -58,7 +58,7 @@ if (NOT TARGET spoa)
 endif ()
 
 set(deps bbcpputil/cpp/AlignmentConsensus.cpp bbcpputil/cpp/BamRecordExt.cpp)
-set(subcommand demux.cpp trimadapter.cpp consensus.cpp accuracy.cpp)
+set(subcommand demux.cpp trimadapter.cpp ms-align.cpp accuracy.cpp include/seqan_init_score.h)
 if (CMAKE_BUILD_TYPE MATCHES Debug)
     message(" ")
     message("CMAKE IN DEBUG MODE")
@@ -81,6 +81,7 @@ if (CMAKE_BUILD_TYPE MATCHES Debug)
     #add_executable(codec codec.cpp ${subcommand} ${deps} ${BACKWARD_ENABLE})
     add_backward(codec)
 endif()
+add_compile_definitions(USE_MALLOC_WRAPPERS)
 target_link_libraries(codec ${CPP_LIBS} spoa)
 
 ######## uncomment if you need to build CODEC_MSI 

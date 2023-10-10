@@ -93,6 +93,8 @@ GetPairOverlapQStartAndQStop(const SeqLib::BamRecord& fwd, const SeqLib::BamReco
 std::pair<int,int>
 GetBamOverlapQStartAndQStop(const SeqLib::BamRecord& record, const SeqLib::GenomicRegion& gr);
 
+SeqLib::BamRecord BwaAlignment2BamRecord(const mem_aln_t& a_aln, const std::string&, const std::string&, uint8_t*);
+
 
 } //end namespace
 

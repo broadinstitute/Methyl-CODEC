@@ -255,6 +255,13 @@ class UnMappedBamWriter {
       std::cerr << "cannot write bam record " << fxr.broad_id() << std::endl;
     }
   }
+
+  void WriteRecord(const SeqLib::BamRecord &read) {
+    bool status = bam_writer_.WriteRecord(read);
+    if (not status) {
+      std::cerr << "cannot write bam record " << read.Qname() << std::endl;
+    }
+  }
 };
 
 }

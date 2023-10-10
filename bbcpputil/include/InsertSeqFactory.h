@@ -177,7 +177,7 @@ class InsertSeqFactory {
     return status;
   }
 
-  std::vector<Segments> FetchReadNameSorted(bool load_unpair = false) {
+  std::vector<Segments> FetchReadNameSorted(bool ubam = false, bool load_unpair = false) {
     std::vector<Segments> ret;
     SeqLib::BamRecord b;
     while(true) {
@@ -185,7 +185,9 @@ class InsertSeqFactory {
       if (!has_read) {
         break;
       }
-      if (!passfilter(b)) continue;
+      if (not ubam) {
+        if (!passfilter(b)) continue;
+      }
       if (clip3_) {
         cpputil::SoftClip3end(b);
       }
