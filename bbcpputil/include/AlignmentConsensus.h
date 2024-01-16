@@ -36,10 +36,10 @@ std::string MergePairSeq(const Segments &segs, const std::vector<std::string>& s
 std::string MergePair(const Segments &segs, bool trim_overhang);
 std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(const Segments &segs);
 
-std::pair<std::string, std::string> PairConsensus(const Segments &segs, const std::vector<std::string>& seqs,
-                                              bool trim_overhang, int qcutoff, std::vector<std::string>& out_quals);
+std::string CallingMetC(const Segments &segs, bool trim_overhang, int qcutoff, int eof);
 
-std::pair<std::string, std::string> PairSeqConsensus(const Segments &seg, bool trim_overhang, int qcutoff);
+//std::pair<std::string, std::string> PairSeqConsensus(const Segments &seg, bool trim_overhang, int qcutoff);
+
 }
 
 #endif //CPPUTIL_INCLUDE_ALIGNMENTCONSENSUS_H_

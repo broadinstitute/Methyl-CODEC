@@ -11,6 +11,23 @@
 
 namespace cpputil {
 
+// methyl C context
+enum class CCTX {Other = 0, CpG, CHG, CHH};
+inline char BisMarkSymb(bool ism, CCTX cctx) {
+  switch (cctx) {
+    case CCTX::Other:
+      return ism? 'U' : 'u';
+    case CCTX::CpG:
+      return ism? 'Z' : 'z';
+    case CCTX::CHG:
+      return ism? 'X' : 'x';
+    case CCTX::CHH:
+      return ism? 'H' : 'h';
+    default:
+      throw std::runtime_error("methylation context deduction error\n");
+  }
+}
+
 typedef std::vector<SeqLib::BamRecord> Segments; // sequenced parts of a paired-end read for example.
                                                  // or group of duplicated reads
 

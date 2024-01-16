@@ -3,7 +3,7 @@
 //
 
 #include "AlignmentConsensus.h"
-
+#include "DNAUtils.h"
 
 namespace cpputil {
 
@@ -158,15 +158,15 @@ std::string MergePair(const Segments &seg, bool trim_overhang) {
   return seq;
 }
 
-std::pair<std::string, std::string> PairSeqConsensus(const Segments &seg, bool trim_overhang, int qcutoff) {
-  std::vector<std::string> seqs;
-  std::vector<std::string> dummy_quals;
-  for (auto&s : seg) {
-    seqs.push_back(s.Sequence());
-  }
-  auto seq = cpputil::PairConsensus(seg, seqs, trim_overhang, qcutoff, dummy_quals);
-  return seq;
-}
+//std::pair<std::string, std::string> PairSeqConsensus(const Segments &seg, bool trim_overhang, int qcutoff) {
+//  std::vector<std::string> seqs;
+//  std::vector<std::string> dummy_quals;
+//  for (auto&s : seg) {
+//    seqs.push_back(s.Sequence());
+//  }
+//  auto seq = cpputil::PairConsensus(seg, seqs, trim_overhang, qcutoff, dummy_quals);
+//  return seq;
+//}
 
 std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(const Segments &segs) {
   assert(segs.size() == 2);
@@ -193,20 +193,13 @@ std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(cons
   return std::make_pair(dna_pileup, qual_pileup);
 }
 
-std::pair<std::string, std::string> PairConsensus(const Segments &segs, const std::vector<std::string>& seqs,
-    bool trim_overhang, int qcutoff, std::vector<std::string>& out_quals) {
-  //seqs should hold the fastq seq for segs. They could be same length but different seqs
-  //not to change indel
+std::string CallingMetC(const Segments &segs, bool call_overhang, int qcutoff, int eof) {
+  // eof: min distance to the end of fragment filter
+  std::string metstr;
   assert (segs.size() == 2);
-  out_quals.resize(segs.size());
   int ref_most_left;
   const char NUL = 6;
   const std::string consns_templ = GetConsensusTemplate(segs, ref_most_left);
-  std::string consns_seq1(consns_templ.size(), NUL);
-  std::string consns_seq2(consns_templ.size(), NUL);
-  for (auto & qual : out_quals) {
-    qual = std::string(consns_templ.size(), 33);
-  }
   int32_t start = 0;
   std::string dnaseq, qual;
   std::vector<std::string> dna_pileup(segs.size());
@@ -214,71 +207,194 @@ std::pair<std::string, std::string> PairConsensus(const Segments &segs, const st
   for (unsigned sid = 0; sid < segs.size(); ++sid) {
     auto const& seg = segs[sid];
     start = seg.PositionWithSClips() - ref_most_left;
-    std::tie(dnaseq, qual) = GetGappedSeqAndQual(seg, seqs[sid], start, consns_templ);
+    std::tie(dnaseq, qual) = GetGappedSeqAndQual(seg, seg.Sequence(), start, consns_templ);
     dna_pileup[sid] = dnaseq;
     qual_pileup[sid] = qual;
   }
+  int r1_converted;
+  bool r1_getxc = segs[0].GetIntTag("XC", r1_converted);
+  int r2_converted;
+  bool r2_getxc = segs[1].GetIntTag("XC", r2_converted);
+  if (not r1_getxc | not r2_getxc | not (r1_converted ^ r2_converted)) {
+    std::cerr << "Methylation status unclear\n";
+    return metstr;
+  }
+  int cs_idx = 1;
+  int cs_reverse = segs[cs_idx].ReverseFlag();
+
+  char qcutoff_char = static_cast<char>(33 + qcutoff);
   for (unsigned jj = 0; jj < consns_templ.size(); ++jj) {
     // paired baseq calibration. If one of the baseq < cutoff, make all baseq low enough so that VC will ingnore them
-    if (dna_pileup[0][jj] >= 'A' && dna_pileup[1][jj] >= 'A'
-        && std::min(qual_pileup[0][jj], qual_pileup[1][jj]) < static_cast<char>(33 + qcutoff)) {
-      qual_pileup[0][jj] = static_cast<char>(35);
-      qual_pileup[1][jj] = static_cast<char>(35);
-    }
-    if (dna_pileup[0][jj] == '.' or dna_pileup[1][jj] == '.') { // overhang
-      if (not trim_overhang) {
-        if (dna_pileup[0][jj] != '.' and dna_pileup[0][jj] != '-' and dna_pileup[1][jj] == '.') {
-          consns_seq1[jj] = dna_pileup[0][jj];
-          out_quals[0][jj] = qual_pileup[0][jj];
-        } else if (dna_pileup[0][jj] == '.' and dna_pileup[1][jj] != '.' and dna_pileup[1][jj] != '-') {
-          consns_seq2[jj] = dna_pileup[1][jj];
-          out_quals[1][jj] = qual_pileup[1][jj];
-        }
+//    if (dna_pileup[0][jj] >= 'A' && dna_pileup[1][jj] >= 'A'
+//        && std::min(qual_pileup[0][jj], qual_pileup[1][jj]) < static_cast<char>(33 + qcutoff)) {
+//      qual_pileup[0][jj] = static_cast<char>(35);
+//      qual_pileup[1][jj] = static_cast<char>(35);
+//    }
+    if (jj < eof or jj + eof >= consns_templ.size()) {
+      if (IsdNTP(dna_pileup[cs_idx][jj])) {
+        metstr += ".";
       }
-    } else {
-      if (dna_pileup[0][jj] != dna_pileup[1][jj]) {
-        assert(dna_pileup[0][jj] != '-' or dna_pileup[1][jj] != '+');
-        assert(dna_pileup[0][jj] != '+' or dna_pileup[1][jj] != '-');
-        if (dna_pileup[0][jj] == '-' or dna_pileup[0][jj] == '+') {
-          consns_seq2[jj] = dna_pileup[1][jj];
-        }
-        else if (dna_pileup[1][jj] == '-' or dna_pileup[1][jj] == '+') {
-          consns_seq1[jj] = dna_pileup[0][jj];
-        }
-        else {
-          consns_seq1[jj] = 'N';
-          consns_seq2[jj] = 'N';
-        }
-#if 0
-    // DO CONSENSUS for INDEL
-        if (std::min(dna_pileup[0][jj], dna_pileup[1][jj]) == '-') {
-          // the consensus of del and non-del is N
-          //consns_seq[jj] = std::max(dna_pileup[0][jj], dna_pileup[1][jj]);
-          consns_seq1[jj] = 'N';
-          consns_seq2[jj] = 'N';
-        } else if (std::min(dna_pileup[0][jj], dna_pileup[1][jj]) != '+') {
-          // the consensus of ins and non-ins is N
-          consns_seq1[jj] = 'N';
-          consns_seq2[jj] = 'N';
-        }
-#endif
+      continue;
+    }
+    if (dna_pileup[1-cs_idx][jj] == '.') { // overhang
+      if (call_overhang) {
+        if (cs_reverse) {
+          if ((dna_pileup[cs_idx][jj] == 'C' or dna_pileup[cs_idx][jj] == 'T') and qual_pileup[cs_idx][jj] >= qcutoff_char) {
+            CCTX cctx = CCTX::Other;
+            if (jj + 1 < consns_templ.size() and
+                qual_pileup[cs_idx][jj+1] >= qcutoff_char){
+              if (dna_pileup[cs_idx][jj+1] == 'G') {
+                cctx = CCTX::CpG;
+              } else if (IsH(dna_pileup[cs_idx][jj+1])) {
+                if (jj + 2 < consns_templ.size() and
+                    qual_pileup[cs_idx][jj+2] >= qcutoff_char) {
+                  if (IsH(dna_pileup[cs_idx][jj+2])) {
+                    cctx = CCTX::CHH;
+                  } else if (dna_pileup[cs_idx][jj+2] == 'G') {
+                    cctx = CCTX::CHG;
+                  }
+                }
+              }
+            }
 
-      } else if (dna_pileup[0][jj] >= 'A') {
-        consns_seq1[jj] = dna_pileup[0][jj];
-        consns_seq2[jj] = dna_pileup[0][jj];
-      } else if (dna_pileup[0][jj] == '+') {
-        assert(false);
+            switch (dna_pileup[cs_idx][jj]) {
+              case 'C':
+                metstr += std::string(1, BisMarkSymb(true, cctx));
+                break;
+              case 'T':
+                metstr += std::string(1, BisMarkSymb(false, cctx));
+                break;
+            }
+          } else if (dna_pileup[cs_idx][jj] >= 'A')  { // not a C
+            metstr += ".";
+          }
+        } else { // on forward strand
+          if ((dna_pileup[cs_idx][jj] == 'G' or dna_pileup[cs_idx][jj] == 'A') and qual_pileup[cs_idx][jj] >= qcutoff_char) {
+            CCTX cctx = CCTX::Other;
+            if (jj > 0 and
+                qual_pileup[cs_idx][jj-1] >= qcutoff_char){
+              if (dna_pileup[cs_idx][jj-1] == 'C') {
+                cctx = CCTX::CpG;
+              } else if (IsComplementH(dna_pileup[cs_idx][jj-1])) {
+                if (jj > 1 and
+                    qual_pileup[cs_idx][jj-2] >= qcutoff_char) {
+                  if (IsComplementH(dna_pileup[cs_idx][jj-2])) {
+                    cctx = CCTX::CHH;
+                  } else if (dna_pileup[cs_idx][jj-2] == 'C') {
+                    cctx = CCTX::CHG;
+                  }
+                }
+              }
+            }
+
+            switch (dna_pileup[cs_idx][jj]) {
+              case 'G':
+                metstr += std::string(1, BisMarkSymb(true, cctx));
+                break;
+              case 'A':
+                metstr += std::string(1, BisMarkSymb(false, cctx));
+                break;
+            }
+          } else if (dna_pileup[cs_idx][jj] >= 'A')  { // not a C
+            metstr += ".";
+          }
+        }
+      } else { // do not call overhang
+        if (dna_pileup[cs_idx][jj] >= 'A') {
+          metstr += ".";
+        }
+      }
+    } else { // not overhang
+      if (cs_reverse) { // cs reverse strand
+        if (dna_pileup[1-cs_idx][jj] == 'C' and
+            qual_pileup[1-cs_idx][jj] >= qcutoff_char and
+            qual_pileup[cs_idx][jj] >= qcutoff_char) {
+
+          CCTX cctx = CCTX::Other;
+          if (jj + 1 < dna_pileup[cs_idx].size() and
+            qual_pileup[cs_idx][jj+1] >= qcutoff_char and
+            qual_pileup[1-cs_idx][jj+1] >= qcutoff_char) {
+            if (dna_pileup[cs_idx][jj+1] == 'G' and dna_pileup[1-cs_idx][jj+1] == 'G') {
+              cctx = CCTX::CpG;
+            } else if ((dna_pileup[cs_idx][jj+1] == dna_pileup[1-cs_idx][jj+1] and IsH(dna_pileup[1-cs_idx][jj+1])) or
+                       (dna_pileup[cs_idx][jj+1] == 'T' and dna_pileup[1-cs_idx][jj+1]=='C')) {
+              if (jj + 2 < dna_pileup[cs_idx].size() and
+                  qual_pileup[cs_idx][jj+2] >= qcutoff_char and
+                  qual_pileup[1-cs_idx][jj+2] >= qcutoff_char) {
+                if ((dna_pileup[cs_idx][jj+2] == dna_pileup[1- cs_idx][jj+2] and IsH(dna_pileup[1-cs_idx][jj+2])) or
+                        (dna_pileup[cs_idx][jj+2] == 'T' and dna_pileup[1-cs_idx][jj+2]=='C')) {
+                  cctx = CCTX::CHH;
+                } else if (dna_pileup[1-cs_idx][jj+2] == 'G' and dna_pileup[cs_idx][jj+2] == 'G') {
+                  cctx = CCTX::CHG;
+                }
+              }
+            }
+          }
+
+          switch (dna_pileup[cs_idx][jj]) {
+            case 'C':
+              metstr += std::string(1, BisMarkSymb(true, cctx));
+              break;
+            case 'T':
+              metstr += std::string(1, BisMarkSymb(false, cctx));
+              break;
+            case 'G':
+            case 'A': // seq error
+              metstr += ".";
+              break;
+            default:
+              break;
+          }
+        } else if (dna_pileup[cs_idx][jj] >= 'A') {
+          metstr += ".";
+        }
+      } else { // cs forward strand
+        if (dna_pileup[1-cs_idx][jj] == 'G' and
+            qual_pileup[1-cs_idx][jj] >= qcutoff_char and
+            qual_pileup[cs_idx][jj] >= qcutoff_char) {
+
+          CCTX cctx = CCTX::Other;
+          if (jj > 0 and
+              qual_pileup[cs_idx][jj-1] >= qcutoff_char and
+              qual_pileup[1-cs_idx][jj-1] >= qcutoff_char) {
+            if (dna_pileup[1-cs_idx][jj-1] == 'C' and dna_pileup[cs_idx][jj-1] == 'C') {
+              cctx = CCTX::CpG;
+            } else if ((dna_pileup[cs_idx][jj-1] ==  dna_pileup[1-cs_idx][jj-1] and IsComplementH(dna_pileup[1-cs_idx][jj-1])) or
+                       (dna_pileup[cs_idx][jj-1] == 'A' and dna_pileup[1 - cs_idx][jj-1] == 'G')) {
+              if (jj > 1 and
+                  qual_pileup[cs_idx][jj-2] >= qcutoff_char and
+                  qual_pileup[1-cs_idx][jj-2] >= qcutoff_char) {
+                if ((dna_pileup[cs_idx][jj-2] ==  dna_pileup[1-cs_idx][jj-2] and IsComplementH(dna_pileup[1-cs_idx][jj-2]))
+                     or (dna_pileup[cs_idx][jj-2] == 'A' and dna_pileup[1 - cs_idx][jj-2] == 'G')) {
+                  cctx = CCTX::CHH;
+                } else if (dna_pileup[1-cs_idx][jj-2] == 'C' and dna_pileup[cs_idx][jj-2] =='C') {
+                  cctx = CCTX::CHG;
+                }
+              }
+            }
+          }
+
+          switch (dna_pileup[cs_idx][jj]) {
+            case 'G':
+              metstr += std::string(1, BisMarkSymb(true, cctx));
+              break;
+            case 'A':
+              metstr += std::string(1, BisMarkSymb(false, cctx));
+              break;
+            case 'C':
+            case 'T':
+              metstr += ".";
+              break;
+            default:
+              break;
+          }
+        } else if (dna_pileup[cs_idx][jj] >= 'A') {
+          metstr += ".";
+        }
       }
     }
-    out_quals[0][jj] = consns_seq1[jj] == NUL ? NUL : qual_pileup[0][jj];
-    out_quals[1][jj] = consns_seq2[jj] == NUL ? NUL : qual_pileup[1][jj];
   }
-  consns_seq1.erase(std::remove(consns_seq1.begin(), consns_seq1.end(), NUL), consns_seq1.end());
-  consns_seq2.erase(std::remove(consns_seq2.begin(), consns_seq2.end(), NUL), consns_seq2.end());
-  for (auto& qual : out_quals) {
-    qual.erase(std::remove(qual.begin(),qual.end(), NUL ), qual.end());
-  }
-  return std::make_pair(consns_seq1, consns_seq2);
+  return metstr;
 }
 
 

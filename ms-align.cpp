@@ -8,14 +8,14 @@
 #include <getopt.h>
 #include "spoa/spoa.hpp"
 
-#include "Alignment.h"
-#include "AlignmentConsensus.h"
 #include "BamIO.h"
 #include <seqan/align.h>
 #include "seqan_init_score.h"
 #include "SeqLib/BWAWrapper.h"
 #include "BamRecordExt.h"
-
+#include "FastxRecord.h"
+#include "FastxIO.h"
+#include "AlignmentConsensus.h"
 extern "C" {
 #include "bwa/ksw.h"
 #ifdef USE_MALLOC_WRAPPERS
@@ -60,11 +60,11 @@ struct CssOptions {
   int pair_min_overlap = 1;
   int max_read = 0;
   int min_overlap = 30;
-  bool trim_overhang = false;
+  bool call_overhang = false;
   string reference = "";
-  string tmpdir = "/tmp";
-  //bool output_singleend = false;
+  bool strand_specific_fastq = false;
   int minbq = 0;
+  int min_eof_dist = 0;
   string outprefix = "";
   int thread = 1;
 };
@@ -77,20 +77,17 @@ static struct option  consensus_long_options[] = {
     {"clip3",                    no_argument,            0,        'C'},
     {"mapq",                     required_argument ,     0,        'm'},
     {"baseq",                    required_argument ,     0,        'q'},
+    {"eof",                      required_argument ,     0,        'd'},
     {"outprefix",                required_argument ,     0,        'o'},
     {"pair_min_overlap",         required_argument,      0,        'p'},
-    {"trim_overhang",            no_argument,            0,        't'},
+    {"call_overhang",            no_argument,            0,        't'},
+    {"strand_specific_fastq",   no_argument,            0,        's'},
     {"allow_nonoverlapping_pair",no_argument,            0,        'i'},
-    //{"output_singleend",         no_argument,            0,        's'},
-    //hidden parameter
-   // {"consensus_mode",           required_argument ,     0,        'M'},
-    {"dirtmp",                   required_argument ,     0,        'd'},
-    {"thread",                   required_argument,      0,        'T'},
-    {"max_read",                   required_argument,      0,        'M'},
+    {"max_read",                 required_argument,      0,        'M'},
     {0,0,0,0}
 };
 
-const char* consensus_short_options = "b:m:M:o:lCp:q:d:tT:ir:";
+const char* consensus_short_options = "b:m:M:o:lCp:q:d:tir:s";
 
 void consensus_print_help()
 {
@@ -100,16 +97,18 @@ void consensus_print_help()
   std::cerr<< "-b/--bam,                              Input bam [required]\n";
   std::cerr<< "-o/--outprefix,                        Output sample prefix [required].\n";
   std::cerr<< "-m/--mapq,                             Min mapping quality [10].\n";
-  std::cerr<< "-q/--baseq,                            If one of the baseq < cutoff, make all baseq = 2 so that VC will ingnore them. [0].\n";
+  std::cerr<< "-q/--baseq,                            Min base quality for calling both strand for calling metC[0].\n";
+  std::cerr<< "-e/--min_eof_dist,                     Min distance to the end of the fragments for calling metC. [0].\n";
   std::cerr<< "-r/--reference,                        Reference for alignment. [null].\n";
   //Supplementary not support currently
   //std::cerr<< "-l/--load_supplementary,               Include supplementary alignment [false].\n";
-  std::cerr<< "-t/--trim_overhang,                    When perform paired-end consensus, if true then only do consensus of the overlapped region [false].\n";
+//  std::cerr<< "-t/--call_overhang,                    Call metC in the overhang regions [false].\n";
   std::cerr<< "-C/--clip3,                            trim the 3'end soft clipping [false].\n";
+  std::cerr<< "-s/--strand_specific_fastq,            output fastq for each strand [false].\n";
 //  std::cerr<< "-s/--output_singleend,                 The R1R2 consensus will be output in a single end format [false].\n";
   std::cerr<< "-p/--pair_min_overlap,                 When using selector, the minimum overlap between the two ends of the pair [1].\n";
-  std::cerr<< "-d/--dirtmp,                           Temporary dir for sorted bam [/tmp]\n";
-  std::cerr<< "-T/--thread,                           Number of threads for sort [1]\n";
+//  std::cerr<< "-d/--dirtmp,                           Temporary dir for sorted bam [/tmp]\n";
+//  std::cerr<< "-T/--thread,                           Number of threads for sort [1]\n";
   std::cerr<< "-i/--allow_nonoverlapping_pair,        Allow output of non-overlaping pairs, usually caused by intermolecular ligation. This will simply print the original reads.  [false]\n";
   std::cerr<< "-M/--max_read,                         Maximum number of read pair process. [Inf]\n";
 }
@@ -136,11 +135,14 @@ int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
       case 'q':
         opt.minbq = atoi(optarg);
         break;
+      case 'd':
+        opt.min_eof_dist = atoi(optarg);
+        break;
       case 'l':
         opt.load_supplementary = true;
         break;
       case 't':
-        opt.trim_overhang = true;
+        opt.call_overhang = true;
         break;
       case 'i':
         opt.allow_nonoverlapping_pair = true;
@@ -148,20 +150,14 @@ int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
       case 'C':
         opt.clip3 = true;
         break;
-//      case 's':
-//        opt.output_singleend = true;
-//        break;
-      case 'd':
-        opt.tmpdir = optarg;
+      case 's':
+        opt.strand_specific_fastq = true;
         break;
       case 'M':
         opt.max_read = atoi(optarg);
         break;
       case 'p':
         opt.pair_min_overlap = atoi(optarg);
-        break;
-      case 'T':
-        opt.thread = atoi(optarg);
         break;
       default:consensus_print_help();
         return 1;
@@ -221,8 +217,13 @@ int codec_ms_align(int argc, char ** argv) {
   };
 
   SeqLib::BamWriter bam_writer;
-  SeqLib::BamWriter bam_e_writer;
-  SeqLib::BamWriter bam_c_writer;
+//  SeqLib::BamWriter bam_e_writer;
+//  SeqLib::BamWriter bam_c_writer;
+  cpputil::FastqWriter fq_e_writer, fq_c_writer;
+  if (opt.strand_specific_fastq) {
+    fq_e_writer.open(opt.outprefix + ".protected_reads.fastq.gz");
+    fq_c_writer.open(opt.outprefix + ".converted_reads.fastq.gz");
+  }
   string hdr_line;
   for (unsigned i = 0; i < bwa.GetIndex()->bns->n_seqs; ++i) {
     char hdr_line1[80];
@@ -239,16 +240,15 @@ int codec_ms_align(int argc, char ** argv) {
   }
 
   bam_writer.Open(opt.outprefix + ".paired_reads.bam");
-  bam_e_writer.Open(opt.outprefix + ".extended_reads.bam");
-  bam_c_writer.Open(opt.outprefix + ".converted_reads.bam");
+  //metbam_writer.Open(opt.outprefix + ".converted_strand.bam");
+//  bam_e_writer.Open(opt.outprefix + ".extended_reads.bam");
+//  bam_c_writer.Open(opt.outprefix + ".converted_reads.bam");
   std::vector<std::string> ref_dict;
   SeqLib::BamHeader bh(hdr_line);
   bam_writer.SetHeader(bh);
   bam_writer.WriteHeader();
-  bam_e_writer.SetHeader(bh);
-  bam_e_writer.WriteHeader();
-  bam_c_writer.SetHeader(bh);
-  bam_c_writer.WriteHeader();
+  //metbam_writer.SetHeader(bh);
+  //metbam_writer.WriteHeader();
 
   //std::cout << hdr_line << std::endl;
   cpputil::InsertSeqFactory isf(opt.bam,
@@ -385,7 +385,9 @@ int codec_ms_align(int argc, char ** argv) {
 //              std::cout << "alignment on converted strand\n";
 //              std::cout << bam_cs;
               auto bam_et = cpputil::BwaAlignment2BamRecord(et_aln, seg[0].Qname(), extended_strand, ext_qual);
+              bam_et.AddIntTag("XC", 0);
               auto bam_cs = cpputil::BwaAlignment2BamRecord(cs_aln, seg[0].Qname(), converted_strand, cvt_qual);
+              bam_cs.AddIntTag("XC", 1);
               if (bam_cs.GetCigar().NumQueryConsumed() != converted_strand.length()) {
                 std::cout << seg[0].Qname() << " cigar not interpretable\n";
                 continue;
@@ -404,12 +406,39 @@ int codec_ms_align(int argc, char ** argv) {
                 bam_et.shared_pointer()->core.isize = -bam_et.PositionEnd() + bam_cs.Position() - 1;
                 bam_cs.shared_pointer()->core.isize = bam_et.PositionEnd() - bam_cs.Position() + 1;
               }
+              cpputil::Segments aligned_segs = {bam_et, bam_cs};
+              auto metc = cpputil::CallingMetC(aligned_segs, opt.call_overhang, opt.minbq, opt.min_eof_dist);
+
+              bam_cs.AddZTag("XM", metc);
+              bam_cs.AddZTag("XR", "GA");
+              if (bam_cs.ReverseFlag()) {
+                bam_cs.AddZTag("XG", "CT");
+              } else {
+                bam_cs.AddZTag("XG", "GA");
+              }
               bam_writer.WriteRecord(bam_et);
-              bam_e_writer.WriteRecord(bam_et);
               bam_writer.WriteRecord(bam_cs);
-              bam_c_writer.WriteRecord(bam_cs);
+
+              //make a single-end bam record of converted strand for bismark_extract_methylation
+//              if (bam_cs.ReverseFlag()) {
+//                bam_cs.shared_pointer()->core.flag = 16;
+//              } else {
+//                bam_cs.shared_pointer()->core.flag = 0;
+//              }
+//              bam_cs.shared_pointer()->core.mtid = -1;
+//              bam_cs.shared_pointer()->core.mpos = -1;
+//              bam_cs.shared_pointer()->core.isize = 0;
+//              metbam_writer.WriteRecord(bam_cs);
+
+              //output fastq for each strands
+              if (opt.strand_specific_fastq) {
+                cpputil::FastxRecord fq_et(bam_et);
+                fq_e_writer.Write(fq_et);
+                cpputil::FastxRecord fq_cs(bam_cs);
+                fq_c_writer.Write(fq_cs);
+              }
               free(cs_aln.cigar);
-            } else {
+            } else { // not overlapped pair-end reads, discard for now
 //              if (first_read_extended) et_aln.flag |= 1 | 0x40 | 8;
 //              else et_aln.flag |= 1 | 0x80 | 8;
 //              auto bam_et = cpputil::BwaAlignment2BamRecord(et_aln, seg[0].Qname(), extended_strand, ext_qual);

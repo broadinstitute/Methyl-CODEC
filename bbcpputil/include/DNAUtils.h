@@ -10,6 +10,19 @@
 
 namespace cpputil {
 
+inline bool IsdNTP(char x) {
+  if (x == 'A' or x == 'C' or x=='G' or x == 'T') return true;
+  else return false;
+}
+inline bool IsH(char x) {
+  if (x == 'A' or x == 'C' or x == 'T') return true;
+  else return false;
+}
+inline bool IsComplementH(char x) {
+  if (x == 'A' or x == 'G' or x == 'T') return true;
+  else return false;
+}
+
 inline char complement(char n) {
   switch (n) {
     case 'A':return 'T';

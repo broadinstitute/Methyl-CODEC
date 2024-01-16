@@ -32,12 +32,12 @@ GATK = f"{config['gatk4']} --java-options \"{JAVA_PARAMS}\""
 GATK3 = f"{config['gatk3']} --java-options \"{JAVA_PARAMS}\""
 FGBIO = f"java {JAVA_PARAMS} -jar {config['fgbio']}"
 
+PROJECT= config["project"]
 DETECT_DIR="detect"
 ACCU_OUT="sfc"
 ADAPTER_TRIM_OUT="adap_trimmed"
 TRIM_MAPPED="mapped"
 Metrics_OUT="metrics"
-
 workdir: config["cwd"]
 
 batch_to_fastq = metadata.reset_index().groupby('batch').agg({'fastq1' : set, 'fastq2': set})
@@ -51,9 +51,9 @@ rule SplitFastq1:
          lambda wildcards: batch_to_fastq.loc[wildcards.id]['fastq1']
     params:
           nsplit = nparallel,
-          prefix = "/broad/hptmp/ruolin/{id}_split_r1"
+          prefix = expand("/broad/hptmp/ruolin/{prjdir}/{{id}}_split_r1", prjdir=PROJECT)
     output:
-          split = temp(expand("/broad/hptmp/ruolin/{{id}}_split_r1.{ss}.fastq", ss = SPLITS))
+          split = temp(expand("/broad/hptmp/ruolin/{prjdir}/{{id}}_split_r1.{ss}.fastq", ss = SPLITS, prjdir=PROJECT))
     resources:
         mem = 8,
         runtime = 24
@@ -67,9 +67,9 @@ rule SplitFastq2:
          lambda wildcards: batch_to_fastq.loc[wildcards.id]['fastq2']
     params:
           nsplit = nparallel,
-          prefix = "/broad/hptmp/ruolin/{id}_split_r2"
+          prefix = expand("/broad/hptmp/ruolin/{prjdir}/{{id}}_split_r2", prjdir=PROJECT)
     output:
-          split = temp(expand("/broad/hptmp/ruolin/{{id}}_split_r2.{ss}.fastq", ss = SPLITS))
+          split = temp(expand("/broad/hptmp/ruolin/{prjdir}/{{id}}_split_r2.{ss}.fastq", ss = SPLITS, prjdir=PROJECT))
     resources:
         mem = 8,
         runtime = 24
@@ -82,8 +82,8 @@ for batch in batch_ids:
     rule:
         name: f"Demux_{batch}"
         input:
-          read1 = f"/broad/hptmp/ruolin/{batch}_split_r1.{{ss}}.fastq",
-          read2 = f"/broad/hptmp/ruolin/{batch}_split_r2.{{ss}}.fastq",
+          read1 = f"/broad/hptmp/ruolin/{PROJECT}/{batch}_split_r1.{{ss}}.fastq",
+          read2 = f"/broad/hptmp/ruolin/{PROJECT}/{batch}_split_r2.{{ss}}.fastq",
           sample_sheet = batch_to_samplesheet.loc[batch]['sample_sheet']
         output:
           read1 = temp(expand("demux/%s_split.{{ss}}.{index}.1.fastq.gz" % batch, index = batch_to_samples.loc[batch]['sample'])),
@@ -102,6 +102,33 @@ for batch in batch_ids:
              {DEMUX} -1 {input.read1} -2 {input.read2} -p {input.sample_sheet} -o {params.outprefix} > {params.log}
          """
 
+# rule MergeSplitFastq1:
+#     input:
+#         f1 = expand("demux/{{batch_id}}_split.{ss}.{{index}}.1.fastq.gz", ss=SPLITS),
+#     output:
+#         f1 = "fastq/{batch_id}.{index}.1.fastq.gz",
+#     resources:
+#         mem = 4,
+#         runtime = 72,
+#         ncores = 1
+#     shell:
+#         """
+#         cat {input.f1} > {output.f1}
+#         """
+#
+# rule MergeSplitFastq2:
+#     input:
+#         f2 = expand("demux/{{batch_id}}_split.{ss}.{{index}}.2.fastq.gz", ss=SPLITS)
+#     output:
+#         f2 = "fastq/{batch_id}.{index}.2.fastq.gz"
+#     resources:
+#         mem = 8,
+#         runtime = 72,
+#         ncores = 1
+#     shell:
+#         """
+#         cat {input.f2} > {output.f2}
+#         """
 
 rule Trim:
     input:
@@ -125,181 +152,125 @@ rule Trim:
             {TRIM} -1 {input.read1} -2 {input.read2} -o {params.outprefix} -u 3 -U 3 -f 2 -t 2 -s {params.rgsm} > {output.log}
         """
 
-rule AlignRawTrimmed:
+rule MergeLogSplit:
     input:
-         "adap_trimmed/{batch_id}_split.{ss}.{index}.{type}.bam",
+        expand(ADAPTER_TRIM_OUT + "/{{batch_id}}_split.{ss}.{{index}}.trim.log", ss=SPLITS),
     output:
-          tmp = temp("tmp/{batch_id}_split.{ss}.{index}.{type}.aligned_tmp.sam"),
-    params:
-          reference = REF,
-    resources:
-             mem = 8,
-             ncores = 1,
-             runtime = 48
+        ADAPTER_TRIM_OUT + "/{batch_id}.{index}.trim.log"
     wildcard_constraints:
-          index = "[0-9a-zA-Z_-]+"
-    shell:
-         """
-         samtools fastq {input} | \
-         bwa mem \
-             -K 100000000 \
-             -t {resources.ncores} \
-             -p \
-             -Y \
-             {params.reference} - > {output.tmp}
-         """
-
-rule ZipperBamAlignment:
-    input:
-        mapped = "tmp/{batch_id}_split.{ss}.{index}.{type}.aligned_tmp.sam",
-        unmapped = "adap_trimmed/{batch_id}_split.{ss}.{index}.{type}.bam"
-    output:
-        bam = temp("tmp/{batch_id}_split.{ss}.{index}.{type}.aligned.bam"),
-        bai = temp("tmp/{batch_id}_split.{ss}.{index}.{type}.aligned.bam.bai")
-    params:
-        reference = REF,
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
     resources:
-        mem = 4,
-        runtime = 96,
-        ncores = 2
+        mem = 8,
+        tuntime = 24,
+        ncores = 1
     shell:
         """
-        {FGBIO} --compression 0 --async-io ZipperBams \
-            -i {input.mapped} \
-            --unmapped {input.unmapped} \
-             --ref {params.reference} \
-        | samtools sort - -o {output.bam} -O BAM -@ {resources.ncores} && samtools index {output.bam} -@ {resources.ncores}
+         {AGG_LOG_SCRIPT} {input} {output}
+        """
+
+rule MethylAlign:
+    input:
+        bam = "adap_trimmed/{batch_id}_split.{ss}.{index}.trim.bam"
+    output:
+        pairbam = "tmp/{batch_id}_split.{ss}.{index}.paired_reads.bam",
+    params:
+        outprefix = "tmp/{batch_id}_split.{ss}.{index}"
+    resources:
+        mem = 8,
+        runtime = 72,
+        ncores = config['ncores']
+    shell:
+        """
+        {CODEC_root}/cmake-build-debug/codec ms-align -b {input.bam} -o {params.outprefix} -r {REF} -q 30 -d 12
         """
 
 rule MergeSplit:
     input:
-         bam = expand("tmp/{{batch_id}}_split.{ss}.{{index}}.trim.aligned.bam", ss=SPLITS),
-         bai = expand("tmp/{{batch_id}}_split.{ss}.{{index}}.trim.aligned.bam.bai", ss=SPLITS)
+          expand("tmp/{{batch_id}}_split.{ss}.{{index}}.paired_reads.bam", ss=SPLITS),
     output:
-          bam = temp("tmp/{batch_id}.{index}.raw.aligned.bam"),
-          bai = temp("tmp/{batch_id}.{index}.raw.aligned.bam.bai")
+          merged=temp(expand("tmp/{{batch_id}}.{{index}}.paired_reads.merged.bam")),
+          sorted=temp(expand("tmp/{{batch_id}}.{{index}}.paired_reads.sorted.bam"))
     resources:
           mem = 8,
           runtime = 72,
           ncores = config['ncores']
     shell:
          """
-         samtools merge -@ {resources.ncores} {output.bam} {input.bam} && samtools index {output.bam} -@ {resources.ncores}
-         """
-
-rule MergeLogSplit:
-    input:
-         expand(ADAPTER_TRIM_OUT + "/{{batch_id}}_split.{ss}.{{index}}.trim.log", ss=SPLITS),
-    output:
-         ADAPTER_TRIM_OUT + "/{batch_id}.{index}.trim.log"
-    wildcard_constraints:
-          batch_id = "[0-9a-zA-Z_-]+",
-          index = "[0-9a-zA-Z_-]+"
-    resources:
-          mem = 8,
-          tuntime = 24,
-          ncores = 1
-    shell:
-         """
-          {AGG_LOG_SCRIPT} {input} {output}
-         """
-
-rule SortBam:
-    input:
-        "tmp/{batch_id}.{index}.raw.aligned.bam"
-    output:
-        temp("tmp/{batch_id}.{index}.raw.aligned.sortbyname.bam")
-    wildcard_constraints:
-        index = "[0-9a-zA-Z_-]+"
-    params:
-        temp = temp("/broad/hptmp/{batch_id}.{index}.raw.aligned.sortbyname")
-    resources:
-        mem = 8,
-        runtime = 48,
-    shell:
-        """
-        samtools sort -n {input} -o {output} -T {params.temp}
-        """
-
-
-rule CDSByProduct:
-    input:
-         trim_log = ADAPTER_TRIM_OUT + "/{batch_id}.{index}.trim.log",
-         highconf_bam = "tmp/{batch_id}.{index}.raw.aligned.sortbyname.bam",
-    output:
-          met = Metrics_OUT + "/byproduct/{batch_id}.{index}.byproduct.txt"
-    params:
-          sid = "{index}"
-    wildcard_constraints:
-          index = "[0-9a-zA-Z_-]+"
-    resources:
-        mem = 24,
-        runtime = 24,
-    shell:
-         """
-            {AGG_METRICS_SCRIPT} --sample_id {params.sid} --trim_log {input.trim_log} \
-            --highconf_bam {input.highconf_bam} > {output.met}
+         samtools merge -@ {resources.ncores} {output.merged} {input} && samtools sort -@ {resources.ncores} {output.merged} -o {output.sorted}
          """
 
 rule MergeRawGroup:
     input:
-         lambda wildcard: expand("tmp/{batch_id}.{{index}}.raw.aligned.bam", batch_id = sample_to_batch.loc[wildcard.index]['batch'])
+         lambda wildcard: expand("tmp/{batch_id}.{{index}}.paired_reads.sorted.bam", batch_id = sample_to_batch.loc[wildcard.index]['batch'])
     output:
-          bam = temp("tmp/{index}.raw.aligned.bam")
+          bam = temp(expand("tmp/{{index}}.paired_reads.sorted.bam"))
     resources:
              mem = 8,
              ncores = 1,
              runtime = 72,
     wildcard_constraints:
-        index = "[0-9a-zA-Z_-]+"
+        index = "[0-9a-zA-Z_-]+",
     run:
         if len(input) == 1:
             shell("cp {input} {output.bam}")
         else:
             shell("samtools merge -@ {resources.ncores} {output.bam} {input}")
 
-rule ReplaceRawReadGroup:
-    input:
-       "tmp/{index}.raw.aligned.bam"
-    output:
-       bam = temp("tmp/{index}.raw.replacerg.bam"),
-       bai = temp("tmp/{index}.raw.replacerg.bai"),
-    params:
-        sid = "{index}"
-    resources:
-        mem = 8,
-        runtime = 32,
-    shell:
-        """
-        {PICARD} AddOrReplaceReadGroups \
-           I={input} \
-           O={output.bam} \
-           CREATE_INDEX=true \
-           RGID=4 \
-           RGLB=lib1 \
-           RGPL=ILLUMINA \
-           RGPU=unit1 \
-           RGSM={params.sid}
-        """
+# rule ReplaceRawReadGroup:
+#     input:
+#        "tmp/{index}.raw.aligned.bam"
+#     output:
+#        bam = temp("tmp/{index}.raw.replacerg.bam"),
+#        bai = temp("tmp/{index}.raw.replacerg.bai"),
+#     params:
+#         sid = "{index}"
+#     resources:
+#         mem = 8,
+#         runtime = 32,
+#     shell:
+#         """
+#         {PICARD} AddOrReplaceReadGroups \
+#            I={input} \
+#            O={output.bam} \
+#            CREATE_INDEX=true \
+#            RGID=4 \
+#            RGLB=lib1 \
+#            RGPL=ILLUMINA \
+#            RGPU=unit1 \
+#            RGSM={params.sid}
+#         """
 
-rule MarkRawDuplicates:
+rule MarkPairedDuplicates:
     input:
-        bam = "tmp/{index}.raw.replacerg.bam"
+        bam="tmp/{index}.paired_reads.sorted.bam"
     resources:
         mem = 32,
         runtime = 48,
     output:
-        bam = "tmp/{index}.raw.replacerg.markdup.bam",
-        met = "metrics/{index}.raw.marked_duplicates.txt",
+        bam = "ms-aligned-bam/{index}.paired_reads.markdup.bam",
+        met = "metrics/{index}.paired_reads.marked_duplicates.txt",
     shell:
         """
         {PICARD} MarkDuplicates I={input.bam} O={output.bam} M={output.met} CREATE_INDEX=true TAG_DUPLICATE_SET_MEMBERS=true TAGGING_POLICY=All
         """
 
+rule OutputConvertedStrand:
+    input:
+        bam = "ms-aligned-bam/{index}.paired_reads.markdup.bam",
+    resources:
+        mem = 4,
+        runtime = 48,
+    output:
+        bam = "ms-aligned-bam/{index}.converted_strand.duplicate_removed.bam",
+    shell:
+        """
+        /xchip/bloodbiopsy/ruolin/link_duplex/ms-codec/get_methreads.py {input.bam} {output.bam}
+        """
 
 rule CollectInsertSizeMetrics:
     input:
-         bam = "tmp/{index}.raw.replacerg.markdup.bam",
+        bam = "ms-aligned-bam/{index}.paired_reads.markdup.bam",
     output:
           txt = Metrics_OUT + "/{index}.raw.insert_size_metrics.txt",
           hist = Metrics_OUT + "/{index}.raw.insert_size_histogram.pdf"
@@ -307,89 +278,57 @@ rule CollectInsertSizeMetrics:
          """
          {PICARD} CollectInsertSizeMetrics I={input.bam} O={output.txt} H={output.hist} M=0.5 W=600 DEVIATIONS=100
          """
-
-rule GroupReadByUMI:
+rule BismarkExtractMethylation:
     input:
-         "tmp/{index}.raw.replacerg.markdup.bam"
-         #"tmp/{index}.cds_consensus.aligned.bam",
+        "ms-aligned-bam/{index}.converted_strand.duplicate_removed.bam",
     output:
-         bam = temp("groupbyumi/{index}.GroupedByUmi.bam"),
-         histogram = Metrics_OUT + "/{index}.umiHistogram.txt"
+        "bismark/{index}.converted_strand.duplicate_removed.CpG_report.txt.gz",
+        temp("bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.cov")
     resources:
-             mem = 8,
-             runtime = 32,
-             ncores = 2
-    shell:
-         """
-         {FGBIO} --compression 1 --async-io \
-              GroupReadsByUmi \
-             -i {input} \
-             -o {output.bam} \
-             -f {output.histogram} \
-             -m 0 \
-             --strategy=paired
-         """
-
-rule FgbioCollapseReadFamilies:
-    input:
-         "groupbyumi/{index}.GroupedByUmi.bam",
-    output:
-         temp("tmp/{index}.mol_consensus.bam")
-    params:
-          rg = "{index}"
-    resources:
-             mem = 8,
-             runtime = 48,
-             ncores = config['ncores']
-    shell:
-         """
-
-         {FGBIO} --compression 1 CallMolecularConsensusReads \
-             -i {input} \
-             -o {output} \
-             -p {params.rg} \
-             --threads {resources.ncores} \
-             --consensus-call-overlapping-bases false \
-             -M 1
-         """
-
-rule AlignMolecularConsensusReads:
-    input:
-         "tmp/{index}.mol_consensus.bam"
-    output:
-          temp("tmp/{index}.mol_consensus.aligned.sam")
-    params:
-          reference = REF,
-    resources:
-             mem = 6,
-             runtime = 96,
-             ncores = 4
-    shell:
-         """
-         samtools fastq {input} \
-         | bwa mem -K 100000000 -t {resources.ncores} -p -Y {params.reference} - > {output}
-         """
-
-rule MergeAndSortMoleculeConsensusReads:
-    input:
-        mapped = "tmp/{index}.mol_consensus.aligned.sam",
-        unmapped =  "tmp/{index}.mol_consensus.bam"
-    output:
-        bam = "consensus/{index}.mol_consensus.aligned.bam",
-        bai = "consensus/{index}.mol_consensus.aligned.bam.bai"
-    params:
-        reference = REF,
-    resources:
-        mem = 4,
+        mem = 8,
         runtime = 96,
-        ncores = config['ncores']
     shell:
         """
-        {FGBIO} --compression 0 --async-io ZipperBams \
-            -i {input.mapped} \
-            --unmapped {input.unmapped} \
-             --ref {params.reference} \
-             --tags-to-reverse Consensus \
-             --tags-to-revcomp Consensus \
-        | samtools sort - -o {output.bam} -O BAM -@ {resources.ncores} && samtools index {output.bam} -@ {resources.ncores}
+        bismark_methylation_extractor -s --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
+            --bedGraph --gzip {input} -o bismark --zero_based --comprehensive
+        """
+
+rule BismarkMethylationBedGraphMerge:
+    input:
+        "bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.cov"
+    output:
+        "bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.nodecoy.strand_merge.cov"
+    resources:
+        mem = 4,
+        runtime = 24,
+    shell:
+        """
+        awk 'length($1) <= 5 && $1 != "chrM" {{print $0}}' {input} | /xchip/bloodbiopsy/ruolin/apps/bedtools2/bedtools merge -c 5,6 -o sum,sum > {output}
+        """
+
+
+# rule CpGIslandSummary:
+#     input:
+#         "bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.cov"
+#     output:
+#         "bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.nodocy.cov"
+
+
+rule CDSByProduct:
+    input:
+        trim_log = ADAPTER_TRIM_OUT + "/{batch_id}.{index}.trim.log",
+        highconf_bam = "tmp/{batch_id}.{index}.raw.aligned.sortbyname.bam",
+    output:
+        met = Metrics_OUT + "/byproduct/{batch_id}.{index}.byproduct.txt"
+    params:
+        sid = "{index}"
+    wildcard_constraints:
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 24,
+        runtime = 24,
+    shell:
+        """
+           {AGG_METRICS_SCRIPT} --sample_id {params.sid} --trim_log {input.trim_log} \
+           --highconf_bam {input.highconf_bam} > {output.met}
         """

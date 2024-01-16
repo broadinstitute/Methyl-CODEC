@@ -5,35 +5,16 @@ DBSNP= config['dbsnp']
 
 rule all:
     input:
-        expand(Metrics_OUT + "/{index}.mol_consensus.wgs_metrics.txt",index = sample_names),
-        expand(ACCU_OUT + "/{index}.mutant_metrics.txt", index = sample_names),
-        expand("raw_sfc/{index}.mutant_metrics.txt", index = sample_names),
-        expand(Metrics_OUT + "/{index}.raw.insert_size_metrics.txt",index = sample_names),
-        expand(Metrics_OUT + "/byproduct/{batch_id}.{index}.byproduct.txt", zip, batch_id = metadata.reset_index()['batch'], index = metadata.reset_index()['sample']),
-        expand(Metrics_OUT + "/{index}.raw.wgs_metrics.txt",index = sample_names)
-
-rule CollectRawWgsMetrics:
-    input:
-         bam = "tmp/{index}.raw.replacerg.markdup.bam",
-    output:
-          metrics = Metrics_OUT + "/{index}.raw.wgs_metrics.txt",
-    params:
-          ref = REF,
-          itl = EVAL_REGION_IL
-    resources:
-          mem = 16,
-          runtime = 96
-    shell:
-         """
-         {PICARD} CollectWgsMetrics I={input.bam} O={output.metrics} R={params.ref} INTERVALS={params.itl} \
-         COUNT_UNPAIRED=true MINIMUM_BASE_QUALITY=0 MINIMUM_MAPPING_QUALITY=0
-         """
+        expand("ms-aligned-bam/{index}.converted_strand.duplicate_removed.bam", index=sample_names),
+        expand("bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.nodecoy.strand_merge.cov", index=sample_names),
+        expand(Metrics_OUT + "/{index}.raw.insert_size_metrics.txt", index=sample_names),
+        expand(Metrics_OUT + "/{index}.paired_reads.wgs_metrics.txt",index=sample_names)
 
 rule CollectWgsMetrics:
     input:
-         bam = "consensus/{index}.replacerg.markdup.bam",
+         bam = "ms-aligned-bam/{index}.paired_reads.markdup.bam",
     output:
-          metrics = Metrics_OUT + "/{index}.mol_consensus.wgs_metrics.txt",
+          metrics = Metrics_OUT + "/{index}.paired_reads.wgs_metrics.txt",
     params:
           ref = REF,
           itl = EVAL_REGION_IL
@@ -42,9 +23,9 @@ rule CollectWgsMetrics:
           runtime = 96
     shell:
          """
-         {PICARD} CollectWgsMetrics I={input.bam} O={output.metrics} R={params.ref} INTERVALS={params.itl} \
-         INCLUDE_BQ_HISTOGRAM=true
+         {PICARD} CollectWgsMetrics I={input.bam} O={output.metrics} R={params.ref} INTERVALS={params.itl}
          """
+
 
 rule CollectFinalWgsMetrics:
     input:

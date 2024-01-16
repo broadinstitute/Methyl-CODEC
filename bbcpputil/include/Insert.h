@@ -10,7 +10,7 @@
 #include <memory>
 #include <iostream>
 #include <SeqLib/BamRecord.h>
-#include "AlignmentConsensus.h"
+//#include "AlignmentConsensus.h"
 
 
 using std::list;
