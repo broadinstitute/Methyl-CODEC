@@ -240,15 +240,12 @@ int codec_ms_align(int argc, char ** argv) {
   }
 
   bam_writer.Open(opt.outprefix + ".paired_reads.bam");
-  //metbam_writer.Open(opt.outprefix + ".converted_strand.bam");
-//  bam_e_writer.Open(opt.outprefix + ".extended_reads.bam");
-//  bam_c_writer.Open(opt.outprefix + ".converted_reads.bam");
   std::vector<std::string> ref_dict;
   SeqLib::BamHeader bh(hdr_line);
   bam_writer.SetHeader(bh);
   bam_writer.WriteHeader();
-  //metbam_writer.SetHeader(bh);
-  //metbam_writer.WriteHeader();
+  SeqLib::RefGenome refseq;
+  refseq.LoadIndex(opt.reference);
 
   //std::cout << hdr_line << std::endl;
   cpputil::InsertSeqFactory isf(opt.bam,
@@ -261,8 +258,10 @@ int codec_ms_align(int argc, char ** argv) {
   int64_t read_counter = 0;
   int64_t good_read_counter = 0;
     while (!isf.finished()) {
+      std::cerr <<"loadone!\n";
       std::vector<cpputil::Segments> frag;
       while( (frag= isf.FetchReadNameSorted(true, false)).size() > 0) {
+        std::cerr <<"loadone\n";
         for (auto seg : frag) {
           assert (seg.size() == 2);
           std::string read2 = seg[1].Sequence();
@@ -407,7 +406,7 @@ int codec_ms_align(int argc, char ** argv) {
                 bam_cs.shared_pointer()->core.isize = bam_et.PositionEnd() - bam_cs.Position() + 1;
               }
               cpputil::Segments aligned_segs = {bam_et, bam_cs};
-              auto metc = cpputil::CallingMetC(aligned_segs, opt.call_overhang, opt.minbq, opt.min_eof_dist);
+              auto metc = cpputil::CallingMetC(refseq, bh, aligned_segs, opt.call_overhang, opt.minbq, opt.min_eof_dist);
 
               bam_cs.AddZTag("XM", metc);
               bam_cs.AddZTag("XR", "GA");

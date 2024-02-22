@@ -102,33 +102,6 @@ for batch in batch_ids:
              {DEMUX} -1 {input.read1} -2 {input.read2} -p {input.sample_sheet} -o {params.outprefix} > {params.log}
          """
 
-# rule MergeSplitFastq1:
-#     input:
-#         f1 = expand("demux/{{batch_id}}_split.{ss}.{{index}}.1.fastq.gz", ss=SPLITS),
-#     output:
-#         f1 = "fastq/{batch_id}.{index}.1.fastq.gz",
-#     resources:
-#         mem = 4,
-#         runtime = 72,
-#         ncores = 1
-#     shell:
-#         """
-#         cat {input.f1} > {output.f1}
-#         """
-#
-# rule MergeSplitFastq2:
-#     input:
-#         f2 = expand("demux/{{batch_id}}_split.{ss}.{{index}}.2.fastq.gz", ss=SPLITS)
-#     output:
-#         f2 = "fastq/{batch_id}.{index}.2.fastq.gz"
-#     resources:
-#         mem = 8,
-#         runtime = 72,
-#         ncores = 1
-#     shell:
-#         """
-#         cat {input.f2} > {output.f2}
-#         """
 
 rule Trim:
     input:
@@ -173,24 +146,29 @@ rule MethylAlign:
     input:
         bam = "adap_trimmed/{batch_id}_split.{ss}.{index}.trim.bam"
     output:
-        pairbam = "tmp/{batch_id}_split.{ss}.{index}.paired_reads.bam",
+        pairbam = temp("tmp/{batch_id}_split.{ss}.{index}.paired_reads.bam"),
+        pfastq = temp("tmp/{batch_id}_split.{ss}.{index}.protected_reads.fastq.gz"),
+        cfastq = temp("tmp/{batch_id}_split.{ss}.{index}.converted_reads.fastq.gz")
     params:
         outprefix = "tmp/{batch_id}_split.{ss}.{index}"
     resources:
-        mem = 8,
+        mem = 16,
         runtime = 72,
-        ncores = config['ncores']
+        ncores = 1
     shell:
         """
-        {CODEC_root}/cmake-build-debug/codec ms-align -b {input.bam} -o {params.outprefix} -r {REF} -q 30 -d 12
+        {CODEC_root}/build/codec ms-align -b {input.bam} -o {params.outprefix} -r {REF} -q 30 -d 12 -s
         """
 
-rule MergeSplit:
+rule MergeBamSplit:
     input:
           expand("tmp/{{batch_id}}_split.{ss}.{{index}}.paired_reads.bam", ss=SPLITS),
     output:
-          merged=temp(expand("tmp/{{batch_id}}.{{index}}.paired_reads.merged.bam")),
-          sorted=temp(expand("tmp/{{batch_id}}.{{index}}.paired_reads.sorted.bam"))
+          merged=temp("tmp/{batch_id}.{index}.paired_reads.merged.bam"),
+          sorted=temp("tmp/{batch_id}.{index}.paired_reads.sorted.bam")
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
     resources:
           mem = 8,
           runtime = 72,
@@ -200,11 +178,43 @@ rule MergeSplit:
          samtools merge -@ {resources.ncores} {output.merged} {input} && samtools sort -@ {resources.ncores} {output.merged} -o {output.sorted}
          """
 
+rule MergeFastqSplitPStrand:
+    input:
+          lambda wildcard: expand("tmp/{batch_id}_split.{ss}.{{index}}.protected_reads.fastq.gz", ss=SPLITS, batch_id=sample_to_batch.loc[wildcard.index]['batch']),
+    output:
+          "fastq/{index}.protected_reads.fastq.gz",
+    wildcard_constraints:
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+          mem = 4,
+          runtime = 24,
+          ncores = config['ncores']
+    shell:
+         """
+         cat {input} > {output}
+         """
+
+rule MergeFastqSplitCStrand:
+    input:
+          lambda wildcard: expand("tmp/{batch_id}_split.{ss}.{{index}}.converted_reads.fastq.gz", ss=SPLITS, batch_id=sample_to_batch.loc[wildcard.index]['batch']),
+    output:
+          "fastq/{index}.converted_reads.fastq.gz",
+    wildcard_constraints:
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+          mem = 4,
+          runtime = 24,
+          ncores = config['ncores']
+    shell:
+         """
+         cat {input} > {output}
+         """
+
 rule MergeRawGroup:
     input:
          lambda wildcard: expand("tmp/{batch_id}.{{index}}.paired_reads.sorted.bam", batch_id = sample_to_batch.loc[wildcard.index]['batch'])
     output:
-          bam = temp(expand("tmp/{{index}}.paired_reads.sorted.bam"))
+          bam = temp("tmp/{index}.paired_reads.sorted.bam")
     resources:
              mem = 8,
              ncores = 1,

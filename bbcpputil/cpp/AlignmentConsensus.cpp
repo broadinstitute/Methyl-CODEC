@@ -42,7 +42,7 @@ std::string GetConsensusTemplate(const Segments& segs, int32_t& ref_most_left) {
 }
 
 std::pair<std::string, std::string>
-    GetGappedSeqAndQual(const SeqLib::BamRecord &r, const std::string& seq, const int start, const std::string consensus_template) {
+    GetGappedSeqAndQual(const SeqLib::BamRecord &r, const std::string& seq, const int start, const std::string& consensus_template) {
 
   // seq should be same length as r.Sequence() but can with difference sequence
   // `.` is overhang
@@ -193,7 +193,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(cons
   return std::make_pair(dna_pileup, qual_pileup);
 }
 
-std::string CallingMetC(const Segments &segs, bool call_overhang, int qcutoff, int eof) {
+std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& bamheader, const Segments &segs, bool call_overhang, int qcutoff, int eof) {
   // eof: min distance to the end of fragment filter
   std::string metstr;
   assert (segs.size() == 2);
@@ -223,13 +223,11 @@ std::string CallingMetC(const Segments &segs, bool call_overhang, int qcutoff, i
   int cs_reverse = segs[cs_idx].ReverseFlag();
 
   char qcutoff_char = static_cast<char>(33 + qcutoff);
+  auto refseq = ref.QueryRegion(segs[0].ChrName(bamheader), ref_most_left, ref_most_left + consns_templ.size()) ;
+  unsigned refpos = 0;
+  char refc = 0;
   for (unsigned jj = 0; jj < consns_templ.size(); ++jj) {
-    // paired baseq calibration. If one of the baseq < cutoff, make all baseq low enough so that VC will ingnore them
-//    if (dna_pileup[0][jj] >= 'A' && dna_pileup[1][jj] >= 'A'
-//        && std::min(qual_pileup[0][jj], qual_pileup[1][jj]) < static_cast<char>(33 + qcutoff)) {
-//      qual_pileup[0][jj] = static_cast<char>(35);
-//      qual_pileup[1][jj] = static_cast<char>(35);
-//    }
+    if (consns_templ[jj] != '+') refc = refseq[refpos++];
     if (jj < eof or jj + eof >= consns_templ.size()) {
       if (IsdNTP(dna_pileup[cs_idx][jj])) {
         metstr += ".";
@@ -336,7 +334,11 @@ std::string CallingMetC(const Segments &segs, bool call_overhang, int qcutoff, i
               metstr += std::string(1, BisMarkSymb(true, cctx));
               break;
             case 'T':
-              metstr += std::string(1, BisMarkSymb(false, cctx));
+              if (refc == 'C') {
+                metstr += std::string(1, BisMarkSymb(false, cctx));
+              } else {
+                metstr += ".";
+              }
               break;
             case 'G':
             case 'A': // seq error

@@ -59,6 +59,7 @@ endif ()
 
 set(deps bbcpputil/cpp/AlignmentConsensus.cpp bbcpputil/cpp/BamRecordExt.cpp)
 set(subcommand demux.cpp trimadapter.cpp ms-align.cpp accuracy.cpp include/seqan_init_score.h)
+
 if (CMAKE_BUILD_TYPE MATCHES Debug)
     message(" ")
     message("CMAKE IN DEBUG MODE")

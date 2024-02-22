@@ -30,13 +30,14 @@ inline void find_insert_(const SeqLib::Cigar &cigar, int left_cursor, std::map<i
 std::string GetConsensusTemplate(const Segments& segs, int32_t& ref_most_left);
 
 std::pair<std::string, std::string>
-    GetGappedSeqAndQual(const SeqLib::BamRecord &r, const int start, const std::string consensus_template);
+    GetGappedSeqAndQual(const SeqLib::BamRecord &r, const int start, const std::string& consensus_template);
 
 std::string MergePairSeq(const Segments &segs, const std::vector<std::string>& seqs, bool trim_overhang);
 std::string MergePair(const Segments &segs, bool trim_overhang);
 std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(const Segments &segs);
 
-std::string CallingMetC(const Segments &segs, bool trim_overhang, int qcutoff, int eof);
+std::string CallingMetC(const SeqLib::RefGenome& ref,const SeqLib::BamHeader& bamheader, const Segments &segs, bool trim_overhang, int qcutoff, int eof);
+
 
 //std::pair<std::string, std::string> PairSeqConsensus(const Segments &seg, bool trim_overhang, int qcutoff);
 
