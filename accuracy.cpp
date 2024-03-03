@@ -89,7 +89,7 @@ struct AccuOptions {
   int fragend_dist_filter = 0;
   float min_passQ_frac_TT = 0;
   float min_passQ_frac = 0;
-  bool filter_5endclip = false;
+  int max_5endclip = MYINT_MAX;
   int max_N_filter = MYINT_MAX;
   int max_snv_filter = MYINT_MAX;
   int min_fraglen = 30;
@@ -158,7 +158,7 @@ static struct option  accuracy_long_options[] = {
     {"min_indel_anchor_baseq",   required_argument,      0,        'f'},
     {"min_indel_dist_readend",   required_argument,      0,        'E'},
     {"germline_cutoff_vaf",      required_argument,      0,        'i'},
-    {"disable_5endclip_filtering",    no_argument,            0,        '5'},
+    {"max_5endclip",             required_argument,            0,        '5'},
     {"allow_indel_near_snv",     no_argument,            0,        OPT_ALLOW_INDEL_NEAR_SNV},
     {"min_indel_len",            required_argument,            0,        'I'},
     {"min_passQ_frac",           required_argument,      0,        'Q'},
@@ -182,7 +182,7 @@ static struct option  accuracy_long_options[] = {
 //   {"accu_burden",         no_argument,      0,        OPT_ACCU_BURDEN},
     {0,0,0,0}
 };
-const char* accuracy_short_options = "b:a:m:v:S2uo:r:e:q:k:R:M:p:d:n:x:V:L:DC:N:5Q:g:G:I:c:B:Y:W:U:f:i:sPE:";
+const char* accuracy_short_options = "b:a:m:v:S2uo:r:e:q:k:R:M:p:d:n:x:V:L:DC:N:5:Q:g:G:I:c:B:Y:W:U:f:i:sPE:";
 
 void accuracy_print_help()
 {
@@ -228,7 +228,7 @@ void accuracy_print_help()
   std::cerr<< "-i/--germline_cutoff_vaf,              Consider a variant is germline is the VAF is larger than this number [1.0].\n";
 //  std::cerr<< "--min_passQ_frac_T2G,                  Filter out T>G SNV if the fraction of of pass baseq smaller than this value  [0].\n";
   std::cerr<< "--min_passQ_frac_TT,                   Filter out T>G SNV in the context of TT if the fraction of of pass baseq smaller than this value  [0].\n";
-  std::cerr<< "-5/--filter_5endclip,                  Filtering out reads with 5'end soft clipping [False].\n";
+  std::cerr<< "-5/--max_5endclip,                     Maximum length of soft clipping on 5'end allow [INT_MAX].\n";
   std::cerr<< "-I/--min_indel_len,                    any positive values indicate indels calls only [0].\n";
   std::cerr<< "-f/--min_indel_anchor_baseq,           minimum baseq for the anchoring bases of a indel [20].\n";
   std::cerr<< "-E/--min_indel_dist_readend            minimum distant of a INDEL to the end of a read [3].\n";
@@ -357,7 +357,7 @@ int accuracy_parse_options(int argc, char* argv[], AccuOptions& opt) {
         opt.load_proper_pair_only = true;
         break;
       case '5':
-        opt.filter_5endclip = true;
+        opt.max_5endclip = atoi(optarg);
         break;
       case OPT_ALLOW_INDEL_NEAR_SNV:
         opt.allow_indel_near_snv = true;
@@ -471,7 +471,6 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                     int olen,
                     const SeqLib::BamHeader& bamheader,
                     const SeqLib::RefGenome& ref,
-                    const SeqLib::BWAWrapper& bwa,
                     const SeqLib::GenomicRegion* const gr,
                     const std::set<int> blacklist,
                     const AccuOptions& opt,
@@ -526,60 +525,21 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
       if (s.FirstFlag()) r1_vars = vars;
       else r2_vars = vars;
       for (auto &var : vars) {
-        if (var.contig_start >= rstart && var.EndPos() <= rend)
-          var_vars[var].push_back(var);
-      }
-    }
-
-    // alignment filter
-    int XS;
-    if (var_vars.size() > 0 and opt.max_frac_prim_AS < 1.0 and not seg[0].GetIntTag("XS", XS)) {
-      bool failed_AS = false;
-      for (unsigned ii =0; ii < seg.size(); ++ii) {
-        int rid = seg[ii].FirstFlag() ? 0 : 1;
-        int primary_score = 0, sec_as=0;
-        //alignment filter
-        //        if (seg.size() == 2) {
-        //          seq = cpputil::MergePairSeq(seg, orig_seqs, false);
-        //        } else {
-        //          seq = seg[0].Sequence();
-        //        }
-        mem_alnreg_v ar;
-        ar = mem_align1(bwa.GetMemOpt(), bwa.GetIndex()->bwt, bwa.GetIndex()->bns, bwa.GetIndex()->pac,
-                        orig_seqs[rid].length(), orig_seqs[rid].data());
-        if (ar.n >= 100) {
-          failed_AS = true;
-          free(ar.a);
-          break;
-        }
-        for (size_t idx = 0; idx < ar.n; ++idx) {
-          if (ar.a[idx].secondary < 0) {
-            primary_score = ar.a[idx].score;
-            break;
-          }
-        }
-        size_t idx = 0;
-        for (;idx < ar.n; ++idx) {
-          if (ar.a[idx].secondary >= 0) {
-            sec_as = std::max(sec_as, ar.a[idx].score);
-            if (ar.a[idx].score >= primary_score * opt.max_frac_prim_AS) {
-              failed_AS = true;
+        if (var.contig_start >= rstart && var.EndPos() <= rend) {
+          auto itv = var_vars.begin();
+          for (;itv != var_vars.end(); ++itv) {
+            if (itv->first == var) {
+              itv->second.push_back(var);
               break;
             }
           }
+          if (itv == var_vars.end()) {
+            var_vars[var].push_back(var);
+          }
         }
-        //std::cerr << seg[0].Qname() << "\t" << opt.max_frac_prim_AS << "\t" << primary_score <<"\t" << sec_as <<"\t" << ar.n << "\n";
-        if (failed_AS) {
-          free(ar.a);
-          break;
-        }
-        free(ar.a);
-      }
-      if (failed_AS) {
-        ++errorstat.AS_filter;
-        continue;
       }
     }
+
     if (seg.size() == 2) {
       ++errorstat.n_pass_filter_pairs;
     } else if(seg.size() == 1) {
@@ -784,7 +744,7 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                                           (int) var.alt_seq.size() - (int) var.contig_seq.size(),
                                           var.alt_seq.substr(1), false, opt.germline_var_maxdist,
                                           opt.germline_cutoff_vaf, 10, opt.germline_minbq, exact_match, fuzzy_match);
-          std::cerr << exact_match << ", " <<fuzzy_match << std::endl;
+//          std::cerr << exact_match << ", " <<fuzzy_match << std::endl;
           if (exact_match > 0 or fuzzy_match > 1) {
             ++errorstat.seen_in_germ;
             continue;
@@ -1044,7 +1004,7 @@ int codec_accuracy(int argc, char ** argv) {
       opt.bqual_min = 30;
       opt.fragend_dist_filter = 12;
       opt.min_passQ_frac = 0.5;
-      opt.filter_5endclip = true;
+      opt.max_5endclip = true;
       opt.max_snv_filter = 10;
       opt.max_frac_prim_AS = 0.6;
       opt.germline_minmapq = 60;
@@ -1054,7 +1014,7 @@ int codec_accuracy(int argc, char ** argv) {
       opt.bqual_min = 30;
       opt.fragend_dist_filter = 12;
       opt.min_passQ_frac = 0.7;
-      opt.filter_5endclip = true;
+      opt.max_5endclip = 0;
       opt.max_snv_filter = 4;
       opt.clustered_mut_cutoff = 3;
       opt.max_frac_prim_AS = 0.5;
@@ -1159,7 +1119,7 @@ int codec_accuracy(int argc, char ** argv) {
             "R1_q0_erate\tR1_q30_erate\tR2_q0_erate\tR2_q30_erate\n";
   }
   cpputil::InsertSeqFactory isf(opt.bam,
-                                10,
+                                0,
                                 opt.load_supplementary,
                                 opt.load_secondary,
                                 opt.load_duplicate,
@@ -1204,7 +1164,6 @@ int codec_accuracy(int argc, char ** argv) {
         bcf_reader.vcf_to_blacklist_snv(gr, isf.bamheader(), blacklist);
       }
       for (vector<cpputil::Segments>& frag : chunk) { //frag will be a family if -D is true
-        //std::cerr << frag[0][0] << " load" << std::endl;
         if (opt.min_indel_len) {
           bool has_indel = false;
           for (const auto &seg: frag) {
@@ -1217,6 +1176,7 @@ int codec_accuracy(int argc, char ** argv) {
           if (not has_indel) continue;
         }
         for (const auto& ff : frag) {
+          //std::cerr << ff[0].Qname() << " load" << std::endl;
           readpair_cnt.add(ff[0].Qname());
         }
         if (failed_cnt.exist(frag[0][0].Qname())) {
@@ -1226,18 +1186,18 @@ int codec_accuracy(int argc, char ** argv) {
 
         int pair_nmismatch = 0, olen = 0;
         float nqpass;
-        int fail = cpputil::FailFilter(frag, isf.bamheader(), ref, opt, errorstat, isf.IsPairEndLib() & !opt.load_unpair, pair_nmismatch, nqpass, olen);
+        int fail = cpputil::FailFilter(frag, isf.bamheader(), ref, opt, bwa, errorstat, isf.IsPairEndLib() & !opt.load_unpair, pair_nmismatch, nqpass, olen);
         if (fail) {
           failed_cnt.add(frag[0][0].Qname());
           errorstat.discard_frag_counter += frag.size();
           //std::cerr << fail << ": " << frag[0].size() << ", " << frag[0][0].Qname() << std::endl;
+
         }
         else {
           ErrorRateDriver(frag,
                           pair_nmismatch, nqpass, olen,
                           isf.bamheader(),
                           ref,
-                          bwa,
                           &gr,
                           blacklist,
                           opt,

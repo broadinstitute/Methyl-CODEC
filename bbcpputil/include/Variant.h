@@ -35,7 +35,7 @@ struct Variant {
   int32_t contig_start;
   std::string contig_seq;
   std::string read_id;
-  int32_t alt_start; // in_situ_start , in sequencing direction
+  int32_t alt_start; // in_situ_start, #bases from 5'end in sequencing direction. For read on the reverse strand, this is a negative number
   std::string alt_seq;
   std::string alt_qual;
   int family_size;
@@ -46,6 +46,7 @@ struct Variant {
   int32_t read_count;
   int32_t dist_to_fragend;
   int32_t r1_start, r2_start;
+  int bs_converted; // loses its meaning after squash_vars()
 
   Variant(std::string ctg,
           int32_t cstart,
@@ -57,7 +58,8 @@ struct Variant {
           int fs,
           bool fop,
           bool sop,
-          bool isrev):
+          bool isrev,
+          int bs_cvt):
 
       contig(ctg),
       contig_start(cstart),
@@ -74,7 +76,8 @@ struct Variant {
       read_count(1),
       dist_to_fragend(std::numeric_limits<int>::min()),
       r1_start(std::numeric_limits<int>::min()),
-      r2_start(std::numeric_limits<int>::min())
+      r2_start(std::numeric_limits<int>::min()),
+      bs_converted(bs_cvt)
   {
     if (Type() == "SNV") {
       int minqual = std::numeric_limits<int>::max();
@@ -170,11 +173,53 @@ struct Variant {
   }
 
   bool operator==(const Variant& other) const {
-    if (other.contig != this->contig) return false;
-    if (other.contig_start != this->contig_start) return false;
-    if (other.alt_seq != this->alt_seq) return false;
-    if (other.contig_seq != this->contig_seq) return false;
-    return true;
+    if (other.contig == this->contig && other.contig_start == this->contig_start)  {
+      if (other.alt_seq == this->alt_seq) {
+        return true;
+      } else if (this->bs_converted or other.bs_converted) {
+        if (this->bs_converted) {
+          if (this->rev_strand) {
+            if (this->alt_seq.size () == other.alt_seq.size() and
+                this->alt_seq == std::string("T", this->alt_seq.size()) and
+                other.alt_seq == std::string("C", other.alt_seq.size())) {
+              return true;
+            } else {
+              return false;
+            }
+          } else { // forward strand
+            if (this->alt_seq.size () == other.alt_seq.size() and
+                this->alt_seq == std::string("A", this->alt_seq.size()) and
+                other.alt_seq == std::string("G", other.alt_seq.size())) {
+              return true;
+            } else {
+              return false;
+            }
+          }
+        } else {
+          if (other.rev_strand) {
+            if (this->alt_seq.size () == other.alt_seq.size() and
+                other.alt_seq == std::string("T", other.alt_seq.size()) and
+                this->alt_seq == std::string("C", this->alt_seq.size())) {
+              return true;
+            } else {
+              return false;
+            }
+          } else { // forward strand
+            if (this->alt_seq.size () == other.alt_seq.size() and
+                other.alt_seq == std::string("A", other.alt_seq.size()) and
+                this->alt_seq == std::string("G", this->alt_seq.size())) {
+              return true;
+            } else {
+              return false;
+            }
+          }
+        }
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
   }
 
   bool operator!=(const Variant& other) const {
@@ -198,18 +243,18 @@ struct Variant {
 
 template<typename Stream>
 Stream &operator<<(Stream &os, const Variant &v) {
-  int32_t fs;
+  int32_t d;
   if (v.dist_to_fragend == -1) {
-    fs = v.alt_start < 0 ? abs(v.alt_start) : v.alt_start + 1;
+    d = v.alt_start < 0 ? abs(v.alt_start) : v.alt_start + 1;
   } else {
-    fs = v.dist_to_fragend;
+    d = v.dist_to_fragend;
   }
   std::string res = v.contig + "\t" +
                     std::to_string(v.contig_start + 1) + "\t" +
                     v.contig_seq + "\t" +
                     v.alt_seq + "\t" +
                     v.Type() + "\t" +
-                    std::to_string(fs) + "\t" +
+                    std::to_string(d) + "\t" +
                     std::to_string(v.var_qual) + "\t" +
                     std::to_string(v.read_count) + "\t" +
                     v.read_id + "\t" +
@@ -232,7 +277,8 @@ std::vector<Variant> var_atomize(const Variant& var) {
                        var.family_size,
                        var.first_of_pair,
                        var.second_of_pair,
-                       var.rev_strand);
+                       var.rev_strand,
+                       var.bs_converted);
       res.back().dist_to_fragend = var.dist_to_fragend;
       res.back().var_qual = var.var_qual;
       res.back().read_count = var.read_count;
@@ -311,6 +357,16 @@ Variant squash_vars(const std::vector<Variant>& vars) {
     ret.r2_start = vars[0].r2_start;
     ret.r1_start = vars[1].r1_start;
   }
+
+  //for C to T mismatch caused by bisulfite
+  if (vars[0].alt_seq != vars[1].alt_seq) {
+    if (vars[0].alt_seq[0] == 'C' or vars[0].alt_seq[0] == 'T'){
+      ret.alt_seq = std::string("C", vars[0].alt_seq.size());
+    } else {
+      ret.alt_seq = std::string("G", vars[0].alt_seq.size());
+    }
+    std::cerr<<"found meth base " << ret << std::endl;
+  }
   return ret;
 }
 
@@ -354,6 +410,11 @@ std::vector<Variant> GetVar(const SeqLib::BamRecord &rec, const SeqLib::BamHeade
 
   std::string refgapstr, readgapstr, qualgapstr;
   int refpos = 0, readpos = 0;
+  int bs_cvt = 0;
+  bool bs_cvt_flag = rec.GetIntTag("XC", bs_cvt);
+  if (not bs_cvt_flag) {
+    throw std::runtime_error("Not methylation data\n");
+  }
   for (auto cit = cigar.begin(); cit != cigar.end(); ++cit) {
     if (cit->Type() == 'M' or cit->Type() == '=' or cit->Type() == 'X') {
       refgapstr = refstr.substr(refpos, cit->Length());
@@ -381,7 +442,8 @@ std::vector<Variant> GetVar(const SeqLib::BamRecord &rec, const SeqLib::BamHeade
                                GetFamilySize(rec),
                                rec.FirstFlag(),
                                !rec.FirstFlag(),
-                               rec.ReverseFlag());
+                               rec.ReverseFlag(),
+                               bs_cvt);
             if (rec.FirstFlag()) v.r1_start = readstart + readpos + ss;
             else v.r2_start = readstart + readpos + ss;
             vars.push_back(v);
@@ -402,7 +464,8 @@ std::vector<Variant> GetVar(const SeqLib::BamRecord &rec, const SeqLib::BamHeade
                            GetFamilySize(rec),
                            rec.FirstFlag(),
                            !rec.FirstFlag(),
-                           rec.ReverseFlag());
+                           rec.ReverseFlag(),
+                           bs_cvt);
         if (rec.FirstFlag()) v.r1_start = readstart + readpos + ss;
         else v.r2_start = readstart + readpos + ss;
         vars.push_back(v);
@@ -442,7 +505,8 @@ std::vector<Variant> GetVar(const SeqLib::BamRecord &rec, const SeqLib::BamHeade
                              GetFamilySize(rec),
                              rec.FirstFlag(),
                              !rec.FirstFlag(),
-                             rec.ReverseFlag());
+                             rec.ReverseFlag(),
+                             bs_cvt);
           if (rec.FirstFlag()) v.r1_start = readstart + readpos -1;
           else v.r2_start = readstart + readpos -1;
           vars.push_back(v);
@@ -458,7 +522,8 @@ std::vector<Variant> GetVar(const SeqLib::BamRecord &rec, const SeqLib::BamHeade
                              GetFamilySize(rec),
                              rec.FirstFlag(),
                              !rec.FirstFlag(),
-                             rec.ReverseFlag());
+                             rec.ReverseFlag(),
+                             bs_cvt);
           if (rec.FirstFlag()) v.r1_start = readstart + readpos -1;
           else v.r2_start = readstart + readpos -1;
           vars.push_back(v);
@@ -486,7 +551,8 @@ std::vector<Variant> GetVar(const SeqLib::BamRecord &rec, const SeqLib::BamHeade
                            GetFamilySize(rec),
                            rec.FirstFlag(),
                             !rec.FirstFlag(),
-                           rec.ReverseFlag());
+                           rec.ReverseFlag(),
+                           bs_cvt);
         if (rec.FirstFlag()) v.r1_start = readstart + readpos -1;
         else v.r2_start = readstart + readpos -1;
         vars.push_back(v);

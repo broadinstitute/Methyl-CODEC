@@ -417,10 +417,35 @@ std::tuple<int,int, int> NumMisMatchOrLowQualityInOverlapRegion(const cpputil::S
   std::vector<std::string> dna_pileup, qual_pileup;
   std::tie(dna_pileup, qual_pileup) = GetPairPileup(seg);
 
+  int xc1, xc2;
+  int cidx = 0;
+  bool methyl = false;
+  bool xc1_flag = seg[0].GetIntTag("XC", xc1);
+  bool xc2_flag = seg[1].GetIntTag("XC", xc2);
+  if (xc1_flag and xc2_flag and xc1+xc2 == 1) {
+    methyl = true;
+    cidx = xc1 == 1? 0 : 1;
+  }
   for (unsigned jj = 0; jj < dna_pileup[0].size(); ++jj) {
-    if (dna_pileup[0][jj] != '.' and dna_pileup[1][jj] != '.') {
-      if ( dna_pileup[0][jj] >= 'A' and dna_pileup[1][jj] >= 'A') {
-        if (dna_pileup[0][jj] != dna_pileup[1][jj] or dna_pileup[0][jj] == 'N' or dna_pileup[1][jj] == 'N') ++nmis;
+    if (dna_pileup[cidx][jj] != '.' and dna_pileup[1-cidx][jj] != '.') {
+      if ( dna_pileup[cidx][jj] >= 'A' and dna_pileup[1-cidx][jj] >= 'A') {
+        if (dna_pileup[0][jj] == 'N' or dna_pileup[1][jj] == 'N') ++nmis;
+        else {
+          if(dna_pileup[0][jj] != dna_pileup[1][jj]) {
+            if (not methyl) ++nmis;
+            else {
+              if (seg[cidx].ReverseFlag()) {
+                if (not dna_pileup[cidx][jj] == 'T' or not dna_pileup[1-cidx][jj] == 'C') {
+                  ++nmis;
+                }
+              } else {
+                if (not dna_pileup[cidx][jj] == 'A' or not dna_pileup[1-cidx][jj] == 'G') {
+                  ++nmis;
+                }
+              }
+            }
+          }
+        }
         if (qual_pileup[0][jj] < minbq + 33 or qual_pileup[1][jj] < minbq + 33) ++nlowbaseq;
         ++noverlap;
       }
@@ -496,6 +521,7 @@ int FailFilter(const vector<cpputil::Segments>& frag,
                const SeqLib::BamHeader& bamheader,
                const SeqLib::RefGenome& ref,
                const Options& opt,
+               const SeqLib::BWAWrapper& bwa,
                ErrorStat& errorstat,
                     bool paired_only,
                     int& nmis,
@@ -503,6 +529,7 @@ int FailFilter(const vector<cpputil::Segments>& frag,
                     int& olen) {
   /*
    * Pass =0, >0 fail mode
+   * If load_duplicates is true, frag contains a family and filtering only applies to the primary alignments
    */
   Segments const *seg = nullptr;
   if (frag.size() == 1) {
@@ -521,12 +548,6 @@ int FailFilter(const vector<cpputil::Segments>& frag,
     }
     throw std::runtime_error("Unexpected #reads for a fragment");
   }
-  if (frag.size() == 2 and opt.count_read == 0) {
-    if (not cpputil::IsPairOverlap((*seg)[0], (*seg)[1])) {
-      ++errorstat.n_filtered_largefrag;
-      return 5;
-    }
-  }
 
   if (seg->size() == 1 || (*seg)[0].InsertSize() == 0) {
     if ((int) (*seg)[0].NumMatchBases() < std::max(1, opt.min_fraglen)) {
@@ -540,6 +561,16 @@ int FailFilter(const vector<cpputil::Segments>& frag,
     }
   }
 
+  int xc1, xc2;
+  int cidx = 1;
+  bool methyl = false;
+  bool xc1_flag = (*seg)[0].GetIntTag("XC", xc1);
+  bool xc2_flag = (*seg)[1].GetIntTag("XC", xc2);
+  if (xc1_flag and xc2_flag and xc1+xc2 == 1) {
+    methyl = true;
+    cidx = xc1 == 1? 0 : 1;
+  }
+
   olen = EffFragLen(*seg, opt.count_read);
   const std::set<int> blacklist;
   std::pair<int, int> q0den(0, 0);
@@ -548,11 +579,18 @@ int FailFilter(const vector<cpputil::Segments>& frag,
 
   int nfrag_bases = 0, frag_numN;
   if (seg->size() == 2) {
-    if ((*seg)[0].MapQuality() < opt.mapq || (*seg)[1].MapQuality() < opt.mapq) {
-      ++errorstat.n_filtered_by_mapq;
-      return 11;
+    if (methyl) {
+      if ((*seg)[1-cidx].MapQuality() < opt.mapq) {
+        ++errorstat.n_filtered_by_mapq;
+        return 11;
+      }
+    } else {
+      if ((*seg)[0].MapQuality() < opt.mapq || (*seg)[1].MapQuality() < opt.mapq) {
+        ++errorstat.n_filtered_by_mapq;
+        return 11;
+      }
     }
-    if (opt.filter_5endclip && (cpputil::NumSoftClip5End((*seg)[0]) > 0 || cpputil::NumSoftClip5End((*seg)[1]) > 0)) {
+    if (cpputil::NumSoftClip5End((*seg)[0]) > opt.max_5endclip || cpputil::NumSoftClip5End((*seg)[1]) > opt.max_5endclip) {
       ++errorstat.n_filtered_sclip;
       return 2;
     }
@@ -571,7 +609,7 @@ int FailFilter(const vector<cpputil::Segments>& frag,
         return 4;
       }
     }
-  } else {
+  } else { // single read
     if ((*seg)[0].MapQuality() < opt.mapq) {
       ++errorstat.n_filtered_by_mapq;
       return 11;
@@ -583,7 +621,7 @@ int FailFilter(const vector<cpputil::Segments>& frag,
         return 11;
       }
     }
-    if (opt.filter_5endclip && cpputil::NumSoftClip5End((*seg)[0]) > 1) {
+    if (cpputil::NumSoftClip5End((*seg)[0]) > opt.max_5endclip) {
       ++errorstat.n_filtered_sclip;
       return 2;
     }
@@ -609,9 +647,19 @@ int FailFilter(const vector<cpputil::Segments>& frag,
       return 5;
     }
 
-    if (cpputil::GetNMismatch(s) > opt.max_snv_filter) {
-      ++errorstat.n_filtered_edit;
-      return 6;
+    if (methyl) {
+      int xctag;
+      s.GetIntTag("XC", xctag);
+      if (xctag == 0 and cpputil::GetNMismatch(s) > opt.max_snv_filter) {
+        ++errorstat.n_filtered_edit;
+        return 6;
+      }
+
+    } else {
+      if (cpputil::GetNMismatch(s) > opt.max_snv_filter) {
+        ++errorstat.n_filtered_edit;
+        return 6;
+      }
     }
 
     if (opt.clustered_mut_cutoff <  std::numeric_limits<int>::max() && cpputil::HasClusteredMuts(s, bamheader, ref, opt.clustered_mut_cutoff)) {
@@ -645,6 +693,42 @@ int FailFilter(const vector<cpputil::Segments>& frag,
     }
   }
 
+  // alignment filter
+  int XS;
+  if (opt.max_frac_prim_AS < 1.0 and not (*seg)[1-cidx].GetIntTag("XS", XS)) {
+    for (unsigned ii =0; ii < (*seg).size(); ++ii) {
+      if (methyl && ii == cidx) continue;
+      int rid = (*seg)[ii].FirstFlag() ? 0 : 1;
+      int primary_score = 0, sec_as=0;
+      mem_alnreg_v ar;
+      ar = mem_align1(bwa.GetMemOpt(), bwa.GetIndex()->bwt, bwa.GetIndex()->bns, bwa.GetIndex()->pac,
+              (*seg)[ii].Sequence().length(), (*seg)[ii].Sequence().data());
+      if (ar.n >= 100) {
+        free(ar.a);
+        ++errorstat.AS_filter;
+        return 8;
+      }
+      for (size_t idx = 0; idx < ar.n; ++idx) {
+        if (ar.a[idx].secondary < 0) {
+          primary_score = ar.a[idx].score;
+          break;
+        }
+      }
+      size_t idx = 0;
+      for (;idx < ar.n; ++idx) {
+        if (ar.a[idx].secondary >= 0) {
+          sec_as = std::max(sec_as, ar.a[idx].score);
+          if (ar.a[idx].score >= primary_score * opt.max_frac_prim_AS) {
+            free(ar.a);
+            ++errorstat.AS_filter;
+            return 8;
+          }
+        }
+      }
+      //std::cerr << seg[0].Qname() << "\t" << opt.max_frac_prim_AS << "\t" << primary_score <<"\t" << sec_as <<"\t" << ar.n << "\n";
+      free(ar.a);
+    }
+  }
   return 0;
 }
 
