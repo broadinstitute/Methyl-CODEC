@@ -46,7 +46,7 @@ struct Variant {
   int32_t read_count;
   int32_t dist_to_fragend;
   int32_t r1_start, r2_start;
-  int bs_converted; // loses its meaning after squash_vars()
+  int bs_converted; // loses it smeaning after squash_vars()
 
   Variant(std::string ctg,
           int32_t cstart,
