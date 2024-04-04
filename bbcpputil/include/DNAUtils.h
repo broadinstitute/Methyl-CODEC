@@ -40,6 +40,16 @@ inline char complement(char n) {
   return ' ';
 }
 
+inline int countChar(const std::string& str, char ch) {
+  int count = 0;
+  for (char c : str) {
+    if (c == ch) {
+      count++;
+    }
+  }
+  return count;
+}
+
 inline std::string complementString(std::string x) {
   std::transform(std::begin(x), std::end(x), std::begin(x), complement);
   return x;

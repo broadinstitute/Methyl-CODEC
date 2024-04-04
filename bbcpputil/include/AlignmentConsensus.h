@@ -11,6 +11,8 @@
 #include <htslib/sam.h>
 #include "BamRecordExt.h"
 #include "Alignment.h"
+#include "SeqLib/BWAWrapper.h"
+#include "DNAUtils.h"
 
 namespace cpputil {
 
@@ -26,6 +28,15 @@ inline void find_insert_(const SeqLib::Cigar &cigar, int left_cursor, std::map<i
   }
 }
 
+inline bool is_bisulfite_converted(const std::string& seq, int MIN_READL) {
+  int numC = cpputil::countChar(seq, 'C');
+  int numG = cpputil::countChar(seq, 'G');
+  if (seq.size() > MIN_READL and ((float) numC / seq.size() < 0.05 or (float) numG / seq.size() < 0.05 )) {
+    return true;
+  } else {
+    return false;
+  }
+}
 
 std::string GetConsensusTemplate(const Segments& segs, int32_t& ref_most_left);
 
@@ -38,7 +49,8 @@ std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(cons
 
 std::string CallingMetC(const SeqLib::RefGenome& ref,const SeqLib::BamHeader& bamheader, const Segments &segs, bool trim_overhang, int qcutoff, int eof);
 
-
+SeqLib::BamRecord SingleEndBWA(const SeqLib::BWAWrapper& bwa, const SeqLib::BamRecord& ubam, const int MIN_READL = 15);
+Segments PairEndBWA(const SeqLib::BWAWrapper& bwa, const Segments& segs, const int MIN_READL = 15);
 //std::pair<std::string, std::string> PairSeqConsensus(const Segments &seg, bool trim_overhang, int qcutoff);
 
 }

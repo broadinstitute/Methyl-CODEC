@@ -197,9 +197,12 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
   // eof: min distance to the end of fragment filter
   std::string metstr;
   assert (segs.size() == 2);
-  int ref_most_left;
+  int32_t ref_most_left;
   const char NUL = 6;
   const std::string consns_templ = GetConsensusTemplate(segs, ref_most_left);
+  if (ref_most_left < 0) {
+    return metstr;
+  }
   int32_t start = 0;
   std::string dnaseq, qual;
   std::vector<std::string> dna_pileup(segs.size());
@@ -211,14 +214,14 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
     dna_pileup[sid] = dnaseq;
     qual_pileup[sid] = qual;
   }
-  int r1_converted;
-  bool r1_getxc = segs[0].GetIntTag("XC", r1_converted);
-  int r2_converted;
-  bool r2_getxc = segs[1].GetIntTag("XC", r2_converted);
-  if (not r1_getxc | not r2_getxc | not (r1_converted ^ r2_converted)) {
-    std::cerr << "Methylation status unclear\n";
-    return metstr;
-  }
+//  int r1_converted;
+//  bool r1_getxc = segs[0].GetIntTag("XC", r1_converted);
+//  int r2_converted;
+//  bool r2_getxc = segs[1].GetIntTag("XC", r2_converted);
+//  if (not r1_getxc | not r2_getxc | not (r1_converted ^ r2_converted)) {
+//    std::cerr << "Methylation status unclear\n";
+//    return metstr;
+//  }
   int cs_idx = 1;
   int cs_reverse = segs[cs_idx].ReverseFlag();
 
@@ -460,6 +463,213 @@ std::pair<std::string, std::string> MergeSegs(const Segments &segs, const std::v
     qual.erase(std::remove(qual.begin(),qual.end(), NUL ), qual.end());
   }
   return std::make_pair(consns_seq, consns_qual);
+}
+
+SeqLib::BamRecord SingleEndBWA(const SeqLib::BWAWrapper& bwa, const SeqLib::BamRecord& ubam, const int MIN_READL) {
+  mem_alnreg_v ar1;
+  mem_aln_t ar1_aln;
+  int ar1_sec_as = 0;
+  std::string r1 = ubam.Sequence();
+  uint8_t *qual1 = 0;
+  qual1 = bam_get_qual(ubam.raw());
+  if (r1.length() < MIN_READL) {
+    return ubam;
+  } else {
+    ar1 = mem_align1(bwa.GetMemOpt(), bwa.GetIndex()->bwt, bwa.GetIndex()->bns, bwa.GetIndex()->pac,
+                     r1.length(),r1.data());
+    if (ar1.n > 0 ) {
+      size_t f_pidx = 0;
+      for (size_t idx = 0; idx < ar1.n; ++idx) {
+        if (ar1.a[idx].secondary < 0) {
+          f_pidx = idx;
+        } else {
+          ar1_sec_as = std::max(ar1_sec_as, ar1.a[idx].score);
+        }
+      }
+      ar1_aln = mem_reg2aln(bwa.GetMemOpt(), bwa.GetIndex()->bns, bwa.GetIndex()->pac, r1.length(), r1.c_str(), &ar1.a[f_pidx]);
+      ar1_aln.flag |= 1;
+      if (ubam.FirstFlag()) {
+        ar1_aln.flag |= 0x40;
+      } else {
+        ar1_aln.flag |= 0x80;
+      }
+
+      auto bam1 = cpputil::BwaAlignment2BamRecord(ar1_aln, ubam.Qname(), r1, qual1);
+      free(ar1_aln.cigar);
+      std::string rx1;
+      if (ubam.GetZTag("RX", rx1)) {
+        bam1.AddZTag("RX", rx1);
+      }
+      if (ar1_aln.XA)
+        bam1.AddZTag("XA", std::string(ar1_aln.XA));
+
+      // add num sub opt
+      //b.AddIntTag("SB", ar.a[i].sub_n);
+      bam1.AddIntTag("XS", ar1_sec_as);
+      free(ar1.a);
+      return bam1;
+    } else {
+      return ubam;
+    }
+  }
+}
+
+Segments PairEndBWA(const SeqLib::BWAWrapper& bwa, const Segments& segs, const int MIN_READL) {
+  const int MAX_FRAG_DIST = 10000;
+  Segments out;
+  mem_alnreg_v ar1, ar2;
+  mem_aln_t ar1_aln, ar2_aln;
+  int ar1_sec_as = 0, ar2_sec_as = 0;
+
+  std::string r1 = segs[0].Sequence();
+  std::string r2 = segs[1].Sequence();
+  uint8_t *qual1 = 0, *qual2 = 0;
+  qual1 = bam_get_qual(segs[0].raw());
+  qual2 = bam_get_qual(segs[1].raw());
+  SeqLib::BamRecord bam1, bam2;
+  //r1
+  if (r1.length() < MIN_READL) {
+    ar1.n = 0;
+    memset(&ar1_aln, 0, sizeof(mem_aln_t));
+    ar1_aln.rid = -1;
+    ar1_aln.pos = -1;
+    ar1_aln.flag |= 0x4;
+  } else {
+    ar1 = mem_align1(bwa.GetMemOpt(), bwa.GetIndex()->bwt, bwa.GetIndex()->bns, bwa.GetIndex()->pac,
+                     r1.length(),r1.data());
+    if (ar1.n > 0 ) {
+      size_t f_pidx = 0;
+      for (size_t idx = 0; idx < ar1.n; ++idx) {
+        if (ar1.a[idx].secondary < 0) {
+          f_pidx = idx;
+        } else {
+          ar1_sec_as = std::max(ar1_sec_as, ar1.a[idx].score);
+        }
+      }
+      ar1_aln = mem_reg2aln(bwa.GetMemOpt(), bwa.GetIndex()->bns, bwa.GetIndex()->pac, r1.length(), r1.c_str(), &ar1.a[f_pidx]);
+    }
+    free(ar1.a);
+  }
+  //r2
+  if (r2.length() < MIN_READL) {
+    ar2.n = 0;
+    memset(&ar2_aln, 0, sizeof(mem_aln_t));
+    ar2_aln.rid = -1;
+    ar2_aln.pos = -1;
+    ar2_aln.flag |= 0x4;
+  } else {
+    ar2 = mem_align1(bwa.GetMemOpt(), bwa.GetIndex()->bwt, bwa.GetIndex()->bns, bwa.GetIndex()->pac,
+                     r2.length(),r2.data());
+
+    if (ar2.n > 0 ) {
+      size_t f_pidx = 0;
+      for (size_t idx = 0; idx < ar2.n; ++idx) {
+        if (ar2.a[idx].secondary < 0) {
+          f_pidx = idx;
+        } else {
+          ar2_sec_as = std::max(ar2_sec_as, ar2.a[idx].score);
+        }
+      }
+      ar2_aln = mem_reg2aln(bwa.GetMemOpt(), bwa.GetIndex()->bns, bwa.GetIndex()->pac, r2.length(), r2.c_str(), &ar2.a[f_pidx]);
+    }
+  }
+  if (r1.length() >= MIN_READL) {
+    free(ar1.a);
+  }
+  if (r2.length() >= MIN_READL) {
+    free(ar2.a);
+  }
+  //set flags
+  ar1_aln.flag |= 1;
+  ar2_aln.flag |= 1;
+  ar1_aln.flag |= 0x40;
+  ar2_aln.flag |= 0x80;
+  if (ar1.n == 0 && ar2.n==0) {
+    out.push_back(segs[0]);
+    out.push_back(segs[1]);
+    return out;
+  }  else {
+    if (ar1.n == 0) {
+      ar2_aln.flag &= 8;
+      if (ar2_aln.is_rev)  {
+        ar1_aln.flag |= 0x20;
+      }
+      bam1 = segs[0];
+      bam2 = cpputil::BwaAlignment2BamRecord(ar2_aln, segs[1].Qname(), r2, qual2);
+    }
+    if (ar2.n == 0) {
+      ar1_aln.flag &= 8;
+      if (ar1_aln.is_rev)  {
+        ar2_aln.flag |= 0x20;
+      }
+      bam1 = cpputil::BwaAlignment2BamRecord(ar1_aln, segs[0].Qname(), r1, qual1);
+      bam2 = segs[1];
+    }
+  }
+  if (ar1.n > 0 and ar2.n > 0) {
+    if (ar1_aln.rid == ar2_aln.rid and (ar1_aln.is_rev ^ ar2_aln.is_rev)) {
+      if (ar1_aln.is_rev and ar1_aln.pos >= ar2_aln.pos and ar1_aln.pos - ar2_aln.pos < MAX_FRAG_DIST) {
+        ar1_aln.flag |= 2;
+        ar2_aln.flag |= 2;
+      } else if (ar2_aln.is_rev and ar2_aln.pos >= ar1_aln.pos and ar2_aln.pos - ar1_aln.pos < MAX_FRAG_DIST) {
+        ar1_aln.flag |= 2;
+        ar2_aln.flag |= 2;
+      }
+    }
+    bam1 = cpputil::BwaAlignment2BamRecord(ar1_aln, segs[0].Qname(), r1, qual1);
+    bam2 = cpputil::BwaAlignment2BamRecord(ar2_aln, segs[1].Qname(), r2, qual2);
+  }
+  //set other tag
+
+
+  if (ar1.n > 0) {
+    free(ar1_aln.cigar);
+  }
+  if (ar2.n > 0) {
+    free(ar2_aln.cigar);
+  }
+  bam1.shared_pointer()->core.mtid = bam2.ChrID();
+  bam1.shared_pointer()->core.mpos = bam2.Position();
+  bam2.shared_pointer()->core.mtid = bam1.ChrID();
+  bam2.shared_pointer()->core.mpos = bam1.Position();
+  if (bam1.ProperPair()) {
+    if (bam1.Position() < bam2.Position()) {
+      bam1.shared_pointer()->core.isize = bam2.PositionEnd() - bam1.Position() + 1;
+      bam2.shared_pointer()->core.isize = - bam2.PositionEnd() + bam1.Position() - 1;
+    } else {
+      bam1.shared_pointer()->core.isize = -bam1.PositionEnd() + bam2.Position() - 1;
+      bam2.shared_pointer()->core.isize = bam1.PositionEnd() - bam2.Position() + 1;
+    }
+  }
+  bam1.AddIntTag("XS", ar1_sec_as);
+  bam2.AddIntTag("XS", ar2_sec_as);
+
+  std::string rx1, rx2;
+  if (segs[0].GetZTag("RX", rx1)) {
+    bam1.AddZTag("RX", rx1);
+  }
+  if (segs[1].GetZTag("RX", rx2)) {
+    bam2.AddZTag("RX", rx2);
+  }
+  if (r1.length() < MIN_READL) {
+    SeqLib::Cigar c(std::to_string(r1.length()) + "S");
+    bam1.SetCigar(c);
+  }
+  if (r2.length() < MIN_READL) {
+    SeqLib::Cigar c(std::to_string(r2.length()) + "S");
+    bam2.SetCigar(c);
+  }
+  out.push_back(bam1);
+  out.push_back(bam2);
+  if (bam1.CigarSize() > 0 and bam1.GetCigar().NumQueryConsumed() != r1.length()) {
+    std::cerr << "invalid cigar " << bam1 << std::endl;
+    out[0] = segs[0];
+  }
+  if (bam2.CigarSize() > 0 and bam2.GetCigar().NumQueryConsumed() != r2.length()) {
+    std::cerr << "invalid cigar " << bam2 << std::endl;
+    out[1] = segs[1];
+  }
+  return out;
 }
 
 }

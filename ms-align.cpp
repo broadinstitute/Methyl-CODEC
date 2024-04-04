@@ -36,6 +36,7 @@ extern "C" {
 #endif
 
 #include "InsertSeqFactory.h"
+#include "DNAUtils.h"
 
 #ifdef BGZF_MAX_BLOCK_SIZE_BAK
 #undef BGZF_MAX_BLOCK_SIZE_BAK
@@ -51,10 +52,10 @@ extern "C" {
 using std::string;
 struct CssOptions {
   string bam;
+  string itermol_out;
   int mapq = 10;
   bool load_supplementary = false;
   bool load_secondary = false;
-  bool allow_nonoverlapping_pair = false;
   bool clip3 = false;
 //  int consensus_mode = 0;
   int pair_min_overlap = 1;
@@ -62,13 +63,21 @@ struct CssOptions {
   int min_overlap = 30;
   bool call_overhang = false;
   string reference = "";
+  string read_group_header = "";
   bool strand_specific_fastq = false;
   int minbq = 0;
   int min_eof_dist = 0;
   string outprefix = "";
   int thread = 1;
+  int MIN_READL = 15;
 };
 
+struct LibStat {
+  int total_pairs = 0;
+  int correct_paris = 0;
+  int intermol_pairs = 0;
+  int not_aligned_or_other_issues = 0;
+};
 
 static struct option  consensus_long_options[] = {
     {"bam",                      required_argument,      0,        'b'},
@@ -82,12 +91,13 @@ static struct option  consensus_long_options[] = {
     {"pair_min_overlap",         required_argument,      0,        'p'},
     {"call_overhang",            no_argument,            0,        't'},
     {"strand_specific_fastq",   no_argument,            0,        's'},
-    {"allow_nonoverlapping_pair",no_argument,            0,        'i'},
+    {"intermol_bam",            required_argument,            0,        'i'},
     {"max_read",                 required_argument,      0,        'M'},
+    {"read_group_header",        required_argument,      0,        'R'},
     {0,0,0,0}
 };
 
-const char* consensus_short_options = "b:m:M:o:lCp:q:d:tir:s";
+const char* consensus_short_options = "b:m:M:o:lCp:q:d:ti:r:sR:";
 
 void consensus_print_help()
 {
@@ -109,7 +119,8 @@ void consensus_print_help()
   std::cerr<< "-p/--pair_min_overlap,                 When using selector, the minimum overlap between the two ends of the pair [1].\n";
 //  std::cerr<< "-d/--dirtmp,                           Temporary dir for sorted bam [/tmp]\n";
 //  std::cerr<< "-T/--thread,                           Number of threads for sort [1]\n";
-  std::cerr<< "-i/--allow_nonoverlapping_pair,        Allow output of non-overlaping pairs, usually caused by intermolecular ligation. This will simply print the original reads.  [false]\n";
+  std::cerr<< "-i/--itermol_out,                      Output of non overlapping read-pairs, usually caused by intermolecular ligation. Bam output for protected strand and Fastq for original strand.  [False]\n";
+  std::cerr<< "-R/--read_group_header,                read group header line such as '@RG\tID:foo\tSM:bar'. just like bwa\n";
   std::cerr<< "-M/--max_read,                         Maximum number of read pair process. [Inf]\n";
 }
 
@@ -129,6 +140,9 @@ int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
       case 'r':
         opt.reference = optarg;
         break;
+      case 'R':
+        opt.read_group_header = optarg;
+        break;
       case 'm':
         opt.mapq = atoi(optarg);
         break;
@@ -145,7 +159,7 @@ int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
         opt.call_overhang = true;
         break;
       case 'i':
-        opt.allow_nonoverlapping_pair = true;
+        opt.itermol_out = optarg;
         break;
       case 'C':
         opt.clip3 = true;
@@ -170,12 +184,14 @@ int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
 
 int codec_ms_align(int argc, char ** argv) {
   CssOptions opt;
+  LibStat libstat;
   int parse_ret =  consensus_parse_options(argc, argv, opt);
   if (parse_ret) return 1;
   if (argc == 1) {
     consensus_print_help();
     return 1;
   }
+ // printf("%s\n", opt.read_group_header.c_str());
   if (opt.outprefix.empty()) {
     std::cerr << "-o/--outprefix is required" << std::endl;
     consensus_print_help();
@@ -185,12 +201,6 @@ int codec_ms_align(int argc, char ** argv) {
     std::cerr << "-b/--bam is required" << std::endl;
     consensus_print_help();
     return 1;
-  }
-  if (opt.allow_nonoverlapping_pair) {
-    if (opt.pair_min_overlap != 0) {
-      std::cerr << "-p/--pair_min_overlap has to be 0 if -i/--allow_nonoverlapping_pair is true\n";
-      return 1;
-    }
   }
 
   typedef int TValue;
@@ -217,6 +227,8 @@ int codec_ms_align(int argc, char ** argv) {
   };
 
   SeqLib::BamWriter bam_writer;
+  SeqLib::BamWriter single_ext_strand_bam_writer;
+  cpputil::FastqWriter single_orig_strand_fq_writer;
 //  SeqLib::BamWriter bam_e_writer;
 //  SeqLib::BamWriter bam_c_writer;
   cpputil::FastqWriter fq_e_writer, fq_c_writer;
@@ -238,12 +250,29 @@ int codec_ms_align(int argc, char ** argv) {
     hdr_line += std::string(full_text);
     free(full_text);
   }
+  if (!opt.read_group_header.empty()) {
+    size_t pos = 0;
+    while ((pos = opt.read_group_header.find("\\t", pos)) != std::string::npos) {
+      opt.read_group_header.replace(pos, 2, "\t");
+      pos += 1; // Move past the replaced character
+    }
+    hdr_line += opt.read_group_header + "\n";
+  }
 
   bam_writer.Open(opt.outprefix + ".paired_reads.bam");
+
   std::vector<std::string> ref_dict;
   SeqLib::BamHeader bh(hdr_line);
   bam_writer.SetHeader(bh);
   bam_writer.WriteHeader();
+
+  if (not opt.itermol_out.empty()) {
+    single_orig_strand_fq_writer.open(opt.itermol_out + ".original_strand.fastq.gz");
+    single_ext_strand_bam_writer.Open(opt.itermol_out + ".protected_strand.aligned.bam");
+    single_ext_strand_bam_writer.SetHeader(bh);
+    single_ext_strand_bam_writer.WriteHeader();
+  }
+
   SeqLib::RefGenome refseq;
   refseq.LoadIndex(opt.reference);
 
@@ -253,17 +282,14 @@ int codec_ms_align(int argc, char ** argv) {
                                 opt.load_supplementary,
                                 opt.load_secondary,
                                 true,
-                                !opt.allow_nonoverlapping_pair,
+                                false,
                                 opt.clip3);
-  int64_t read_counter = 0;
-  int64_t good_read_counter = 0;
     while (!isf.finished()) {
-      std::cerr <<"loadone!\n";
       std::vector<cpputil::Segments> frag;
       while( (frag= isf.FetchReadNameSorted(true, false)).size() > 0) {
-        std::cerr <<"loadone\n";
         for (auto seg : frag) {
           assert (seg.size() == 2);
+          ++libstat.total_pairs;
           std::string read2 = seg[1].Sequence();
           cpputil::reverse_complement(read2);
 //          int ol = cpputil::GetNumOverlapBasesPEAlignment(seg);
@@ -272,13 +298,15 @@ int codec_ms_align(int argc, char ** argv) {
           TSequence query = read2;
           std::string converted_strand;
           std::string extended_strand;
+          std:string rx1, rx2;
+          if (not seg[0].GetZTag("RX", rx1)) throw std::runtime_error("No RX tag found\n");
+          if (not seg[1].GetZTag("RX", rx2)) throw std::runtime_error("No RX tag found\n");
           TAlign align1;
           seqan::resize(rows(align1), 2);
           seqan::assignSource(row(align1, 0), ref);
           seqan::assignSource(row(align1, 1), query);
           int s1 = seqan::globalAlignment(align1, scoringScheme,  seqan::AlignConfig<true, false, true, false>(), seqan::AffineGaps());
           if (s1 > opt.min_overlap) {
-            ++good_read_counter;
             int a,b,c,d;
             std::tie(a,b,c,d) = print_AG_CT_mismatch(align1);
             float pi = 1.0 - (float) c/ (a+b+c+d);
@@ -302,34 +330,36 @@ int codec_ms_align(int argc, char ** argv) {
               ext_qual = bam_get_qual(seg[1].raw());
               cvt_qual = bam_get_qual(seg[0].raw());
             }
+
+//          alignment on extended strand using BWA-mem
             mem_alnreg_v ar_et;
             ar_et = mem_align1(bwa.GetMemOpt(), bwa.GetIndex()->bwt, bwa.GetIndex()->bns, bwa.GetIndex()->pac,
                             extended_strand.length(),extended_strand.data());
             if (ar_et.n == 0 ) {
-              std::cout << seg[0].Qname() << " has no alignment\n";
+              //std::cout << seg[0].Qname() << " has no alignment\n";
+              ++libstat.not_aligned_or_other_issues;
               continue;
             }
-            size_t f_pidx = 0;
+            size_t f_pidx = 0, f_2idx;
+            int sec_as = 0;
             for (size_t idx = 0; idx < ar_et.n; ++idx) {
               if (ar_et.a[idx].secondary < 0) {
                 f_pidx = idx;
-                break;
+              } else {
+                sec_as = std::max(sec_as, ar_et.a[idx].score);
               }
             }
-
             mem_aln_t et_aln;
-
-            int64_t rb=0, re=0;
-            int rid;
             et_aln = mem_reg2aln(bwa.GetMemOpt(), bwa.GetIndex()->bns, bwa.GetIndex()->pac, extended_strand.length(), extended_strand.c_str(), &ar_et.a[f_pidx]);
+
+//          map converted strand using BWA-SW at position where extended strand was mapped
+            int64_t rb=0, re=0;
             rb = ar_et.a[f_pidx].rb - 200;
             re = ar_et.a[f_pidx].re + 200;
             int64_t l_pac = bwa.GetIndex()->bns->l_pac;
             if (re > l_pac <<1) re = l_pac<<1;
-//            std::cout << "alignment on extended strand\n";
-//            std::cout << bam_et;
-
             uint8_t *rseq = 0;
+            int rid;
             rseq = bns_fetch_seq(bwa.GetIndex()->bns, bwa.GetIndex()->pac, &rb, (rb+re)>>1, &re, &rid);
             assert(rid == ar_et.a[f_pidx].rid);
             kswr_t ksw_aln;
@@ -387,8 +417,12 @@ int codec_ms_align(int argc, char ** argv) {
               bam_et.AddIntTag("XC", 0);
               auto bam_cs = cpputil::BwaAlignment2BamRecord(cs_aln, seg[0].Qname(), converted_strand, cvt_qual);
               bam_cs.AddIntTag("XC", 1);
+              bam_et.AddIntTag("MQ", bam_cs.MapQuality());
+              bam_cs.AddIntTag("MQ", bam_et.MapQuality());
+              bam_et.AddZTag("MC", bam_cs.CigarString());
+              bam_cs.AddZTag("MC", bam_et.CigarString());
               if (bam_cs.GetCigar().NumQueryConsumed() != converted_strand.length()) {
-                std::cout << seg[0].Qname() << " cigar not interpretable\n";
+                std::cerr << seg[0].Qname() << " cigar not interpretable\n";
                 continue;
               }
               
@@ -408,12 +442,20 @@ int codec_ms_align(int argc, char ** argv) {
               cpputil::Segments aligned_segs = {bam_et, bam_cs};
               auto metc = cpputil::CallingMetC(refseq, bh, aligned_segs, opt.call_overhang, opt.minbq, opt.min_eof_dist);
 
+              bam_et.AddIntTag("XS", sec_as);
               bam_cs.AddZTag("XM", metc);
               bam_cs.AddZTag("XR", "GA");
               if (bam_cs.ReverseFlag()) {
                 bam_cs.AddZTag("XG", "CT");
               } else {
                 bam_cs.AddZTag("XG", "GA");
+              }
+              if (first_read_extended) {
+                bam_et.AddZTag("RX", rx1);
+                bam_cs.AddZTag("RX", rx2);
+              } else {
+                bam_et.AddZTag("RX", rx2);
+                bam_cs.AddZTag("RX", rx1);
               }
               bam_writer.WriteRecord(bam_et);
               bam_writer.WriteRecord(bam_cs);
@@ -436,26 +478,57 @@ int codec_ms_align(int argc, char ** argv) {
                 cpputil::FastxRecord fq_cs(bam_cs);
                 fq_c_writer.Write(fq_cs);
               }
+              ++libstat.correct_paris;
               free(cs_aln.cigar);
-            } else { // not overlapped pair-end reads, discard for now
-//              if (first_read_extended) et_aln.flag |= 1 | 0x40 | 8;
-//              else et_aln.flag |= 1 | 0x80 | 8;
-//              auto bam_et = cpputil::BwaAlignment2BamRecord(et_aln, seg[0].Qname(), extended_strand, ext_qual);
-//              bam_writer.WriteRecord(bam_et);
+            } else { // converted strand failed to align to the same place where extended strand got aligned
+              if (not opt.itermol_out.empty()) {
+                std::string qname = seg[0].Qname();
+                if (first_read_extended) {
+                  single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa,seg[0], opt.MIN_READL));
+                  single_orig_strand_fq_writer.Write(qname + "/2", converted_strand, seg[1].Qualities());
+                } else {
+                  single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa,seg[1], opt.MIN_READL));
+                  single_orig_strand_fq_writer.Write(qname + "/1", converted_strand, seg[0].Qualities());
+                }
+              }
+              ++libstat.intermol_pairs;
             }
             free(ar_et.a);
             free(et_aln.cigar);
+          } else { // no overlap using seqan alignment
+            std::string r1 = seg[0].Sequence();
+            std::string r2 = seg[1].Sequence();
+            if (r1.length() > opt.MIN_READL and r2.length() > opt.MIN_READL) {
+              ++libstat.intermol_pairs;
+            }
+            if (not opt.itermol_out.empty()) {
+              std::string q1 = seg[0].Qualities();
+              std::string q2 = seg[1].Qualities();
+              std::string name = seg[0].Qname();
+
+              if (cpputil::is_bisulfite_converted(r1, opt.MIN_READL)) {
+                single_orig_strand_fq_writer.Write(name + "/1", r1, q1);
+              } else {
+                single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa, seg[0], opt.MIN_READL));
+              }
+
+              if (cpputil::is_bisulfite_converted(r2, opt.MIN_READL)) {
+                single_orig_strand_fq_writer.Write(name + "/2", r2, q2);
+              } else {
+                single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa, seg[1], opt.MIN_READL));
+              }
+            }
           }
-          ++ read_counter;
         }
-        if (read_counter == opt.max_read) {
+        if (libstat.total_pairs == opt.max_read) {
           break;
         }
       }
-      if (read_counter == opt.max_read) {
+      if (libstat.total_pairs == opt.max_read) {
         break;
       }
     }
-  std::cout << "generate " << read_counter << " consensus reads, where "<<good_read_counter <<" are good" << std::endl;
+  std::cout << "total\tcorrect\tintermolecular\tnot_aligned_or_other_issues\n";
+  std::cout << libstat.total_pairs <<"\t" << libstat.correct_paris << "\t" << libstat.intermol_pairs << "\t" << libstat.not_aligned_or_other_issues << std::endl;
   return 0;
 }

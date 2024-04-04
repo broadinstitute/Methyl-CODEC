@@ -23,6 +23,9 @@ TRIM=f"{CODEC_root}/build/codec trim"
 CALL_BIN=f"{CODEC_root}/build/codec call"
 AGG_METRICS_SCRIPT=f"{CODEC_root}/snakemake/script/cds_summarize.py"
 AGG_LOG_SCRIPT=f"{CODEC_root}/snakemake/script/agg_log.py"
+MSCODEC_FIX_PROPER_PAIR_FLAG=f"{CODEC_root}/snakemake/script/mscodec_fixproperpair_and_cal_byprod.py"
+MSCODEC_INTEGRATE_PAIR=f"{CODEC_root}/snakemake/script/mscodec_integrate_pairs.py"
+MSCODEC_GET_METHYL_READ=f"{CODEC_root}/snakemake/script/get_methreads.py"
 SPLIT_SCRIPT=f"{CODEC_root}/snakemake/script/fastqsplit.pl"
 
 JAVA_PARAMS = "-Xmx30g -Djava.io.tmpdir=/tmp"
@@ -109,7 +112,7 @@ rule Trim:
         read2 = "demux/{batch_id}_split.{ss}.{index}.2.fastq.gz",
     output:
         trim = temp("adap_trimmed/{batch_id}_split.{ss}.{index}.trim.bam"),
-        log = temp("adap_trimmed/{batch_id}_split.{ss}.{index}.trim.log"),
+        log = "adap_trimmed/{batch_id}_split.{ss}.{index}.trim.log",
     params:
         adap_type = "custom_primer_v2",
         outprefix = "adap_trimmed/{batch_id}_split.{ss}.{index}",
@@ -122,7 +125,7 @@ rule Trim:
         ss = "[0-9]+"
     shell:
         """
-            {TRIM} -1 {input.read1} -2 {input.read2} -o {params.outprefix} -u 3 -U 3 -f 2 -t 2 -s {params.rgsm} > {output.log}
+            {TRIM} -1 {input.read1} -2 {input.read2} -o {params.outprefix} -u 3 -U 3 -f 2 -t 2 -s {params.rgsm}  > {output.log}
         """
 
 rule MergeLogSplit:
@@ -147,25 +150,50 @@ rule MethylAlign:
         bam = "adap_trimmed/{batch_id}_split.{ss}.{index}.trim.bam"
     output:
         pairbam = temp("tmp/{batch_id}_split.{ss}.{index}.paired_reads.bam"),
-        pfastq = temp("tmp/{batch_id}_split.{ss}.{index}.protected_reads.fastq.gz"),
-        cfastq = temp("tmp/{batch_id}_split.{ss}.{index}.converted_reads.fastq.gz")
+        #pfastq = temp("tmp/{batch_id}_split.{ss}.{index}.protected_reads.fastq.gz"),
+        #cfastq = temp("tmp/{batch_id}_split.{ss}.{index}.converted_reads.fastq.gz"),
+        singlePstrand = temp("tmp/{batch_id}_split.{ss}.{index}.protected_strand.aligned.bam"),
+        singleOstrand = temp("tmp/{batch_id}_split.{ss}.{index}.original_strand.fastq.gz"),
+        log = temp("tmp/{batch_id}_split.{ss}.{index}.msalign.log")
     params:
-        outprefix = "tmp/{batch_id}_split.{ss}.{index}"
+        outprefix = "tmp/{batch_id}_split.{ss}.{index}",
+        rg_str = "@RG\tID:{batch_id}\tSM:bar{index}",
     resources:
         mem = 16,
         runtime = 72,
         ncores = 1
     shell:
         """
-        {CODEC_root}/build/codec ms-align -b {input.bam} -o {params.outprefix} -r {REF} -q 30 -d 12 -s
+        {CODEC_root}/build/codec ms-align -b {input.bam} -o {params.outprefix} -r {REF} -q 30 -d 12 -R '{params.rg_str}' -i {params.outprefix} > {output.log}
         """
+
+rule MergeMethylAlignLog:
+    input:
+        logs = expand("tmp/{{batch_id}}_split.{ss}.{{index}}.msalign.log", ss=SPLITS),
+    output:
+        outfile = Metrics_OUT + "/{batch_id}.{index}.msalign.log"
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 4,
+        runtime = 24,
+        ncores = 1
+    run:
+        total = pd.DataFrame()
+        for f in input.logs:
+            df = pd.read_csv(f, sep='\t')
+            total = pd.concat([total, df])
+        # do a rowSum of every column in the dataframe
+        total = total.sum(axis=0)
+        total.to_csv(output.outfile, sep='\t', index=False)
 
 rule MergeBamSplit:
     input:
           expand("tmp/{{batch_id}}_split.{ss}.{{index}}.paired_reads.bam", ss=SPLITS),
     output:
-          merged=temp("tmp/{batch_id}.{index}.paired_reads.merged.bam"),
-          sorted=temp("tmp/{batch_id}.{index}.paired_reads.sorted.bam")
+          merged=temp("tmp/{batch_id}.{index}.ds_reads.merged.bam"),
+          sorted=temp("tmp/{batch_id}.{index}.firstpass.ds_reads.sorted.bam")
     wildcard_constraints:
         batch_id = "[0-9a-zA-Z_-]+",
         index = "[0-9a-zA-Z_-]+"
@@ -178,46 +206,141 @@ rule MergeBamSplit:
          samtools merge -@ {resources.ncores} {output.merged} {input} && samtools sort -@ {resources.ncores} {output.merged} -o {output.sorted}
          """
 
-rule MergeFastqSplitPStrand:
+rule MergeSinglePstrandBamSplit:
     input:
-          lambda wildcard: expand("tmp/{batch_id}_split.{ss}.{{index}}.protected_reads.fastq.gz", ss=SPLITS, batch_id=sample_to_batch.loc[wildcard.index]['batch']),
+        expand("tmp/{{batch_id}}_split.{ss}.{{index}}.protected_strand.aligned.bam", ss=SPLITS),
     output:
-          "fastq/{index}.protected_reads.fastq.gz",
+        temp("tmp/{batch_id}.{index}.protected_strand_only.aligned.bam"),
     wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
         index = "[0-9a-zA-Z_-]+"
     resources:
-          mem = 4,
-          runtime = 24,
-          ncores = config['ncores']
+        mem = 8,
+        runtime = 72,
+        ncores = config['ncores']
     shell:
-         """
-         cat {input} > {output}
-         """
+        """
+        samtools merge -@ {resources.ncores} {output} {input} 
+        """
 
-rule MergeFastqSplitCStrand:
+rule BismarkSingleOStrand:
     input:
-          lambda wildcard: expand("tmp/{batch_id}_split.{ss}.{{index}}.converted_reads.fastq.gz", ss=SPLITS, batch_id=sample_to_batch.loc[wildcard.index]['batch']),
+        "tmp/{batch_id}_split.{ss}.{index}.original_strand.fastq.gz",
     output:
-          "fastq/{index}.converted_reads.fastq.gz",
+        temp("tmp/{batch_id}_split.{ss}.{index}.single_original_strand.bismark.bam")
+    params:
+        sample = "{batch_id}_split.{ss}.{index}.single_original_strand.bismark"
     wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
         index = "[0-9a-zA-Z_-]+"
     resources:
-          mem = 4,
-          runtime = 24,
-          ncores = config['ncores']
+        mem = 8,
+        runtime = 72,
+        ncores = config['ncores']
     shell:
-         """
-         cat {input} > {output}
-         """
+        """
+        bismark ~/ruolin/database/genome/human/hg38/bismark_bowtie2_ref/ {input} --basename {params.sample} -o tmp --non_directional --local -p {resources.ncores}
+        """
 
-rule MergeRawGroup:
+rule MergeSingleOStrandBismarkBam:
     input:
-         lambda wildcard: expand("tmp/{batch_id}.{{index}}.paired_reads.sorted.bam", batch_id = sample_to_batch.loc[wildcard.index]['batch'])
+        expand("tmp/{{batch_id}}_split.{ss}.{{index}}.single_original_strand.bismark.bam", ss=SPLITS),
     output:
-          bam = temp("tmp/{index}.paired_reads.sorted.bam")
+        temp("tmp/{batch_id}.{index}.original_strand_only.bismark.bam"),
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 8,
+        runtime = 24,
+        ncores = config['ncores']
+    shell:
+        """
+        samtools merge {input} -o {output} -@ {resources.ncores}
+        """
+
+rule IntergrateSingleStrand1:
+    input:
+        pstrand="tmp/{batch_id}.{index}.protected_strand_only.aligned.bam",
+        ostrand="tmp/{batch_id}.{index}.original_strand_only.bismark.bam"
+    output:
+        temp = "tmp/{batch_id}.{index}.singlestrands_merged_sortbyname.bam",
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 8,
+        runtime = 48,
+        ncores = config['ncores']
+    shell:
+        """
+        samtools merge {input.pstrand} {input.ostrand} -o - -@ {resources.ncores} | samtools sort -n -o {output.temp} -@ {resources.ncores}
+        """
+
+rule IntergrateSingleStrand2:
+    input:
+        temp = "tmp/{batch_id}.{index}.singlestrands_merged_sortbyname.bam",
+    output:
+        singlestrand_out = temp("tmp/{batch_id}.{index}.singlestrands.sortbyname.bam"),
+        rescued_paired_out = temp("tmp/{batch_id}.{index}.rescued_doublestrands.bam"),
+        log = Metrics_OUT + "/{batch_id}.{index}.rescure.log"
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 8,
+        runtime = 72,
+        ncores = 1
+    shell:
+        """
+        cat {input.temp} | python {MSCODEC_INTEGRATE_PAIR} | samtools fixmate -p - - | {MSCODEC_FIX_PROPER_PAIR_FLAG} {output.rescued_paired_out} {output.singlestrand_out} > {output.log}
+        """
+
+rule MergeCorrectPairs:
+    input:
+        rescued_paired_out = "tmp/{batch_id}.{index}.rescued_doublestrands.bam",
+        first_paired_out="tmp/{batch_id}.{index}.firstpass.ds_reads.sorted.bam"
+    output:
+        tmpout = temp("tmp/{batch_id}.{index}.rescuded_doublestrands.sorted.bam"),
+        merged = temp("tmp/{batch_id}.{index}.all_ds_reads.sorted.bam")
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 8,
+        runtime = 48,
+        ncores = config['ncores']
+    shell:
+        """
+        samtools sort -@ {resources.ncores} {input.rescued_paired_out} -o {output.tmpout} && \
+        samtools merge -@ {resources.ncores} {output.merged} {input.first_paired_out} {output.tmpout}
+        """
+
+rule SortSingleStrand:
+    input:
+        "tmp/{batch_id}.{index}.singlestrands.sortbyname.bam"
+    output:
+        temp("tmp/{batch_id}.{index}.singlestrands.sorted.bam")
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 8,
+        runtime = 48,
+        ncores = 1
+    shell:
+        """
+        samtools sort -@ 1 {input} -o {output}
+        """
+
+rule MergeDoubleStrandReadsGroup:
+    input:
+         lambda wildcard: expand("tmp/{batch_id}.{{index}}.all_ds_reads.sorted.bam", batch_id = sample_to_batch.loc[wildcard.index]['batch'])
+    output:
+          bam = temp("tmp/{index}.all_ds_reads.sorted.bam")
     resources:
              mem = 8,
-             ncores = 1,
+             ncores = config['ncores'],
              runtime = 72,
     wildcard_constraints:
         index = "[0-9a-zA-Z_-]+",
@@ -227,47 +350,71 @@ rule MergeRawGroup:
         else:
             shell("samtools merge -@ {resources.ncores} {output.bam} {input}")
 
-# rule ReplaceRawReadGroup:
-#     input:
-#        "tmp/{index}.raw.aligned.bam"
-#     output:
-#        bam = temp("tmp/{index}.raw.replacerg.bam"),
-#        bai = temp("tmp/{index}.raw.replacerg.bai"),
-#     params:
-#         sid = "{index}"
-#     resources:
-#         mem = 8,
-#         runtime = 32,
-#     shell:
-#         """
-#         {PICARD} AddOrReplaceReadGroups \
-#            I={input} \
-#            O={output.bam} \
-#            CREATE_INDEX=true \
-#            RGID=4 \
-#            RGLB=lib1 \
-#            RGPL=ILLUMINA \
-#            RGPU=unit1 \
-#            RGSM={params.sid}
-#         """
-
 rule MarkPairedDuplicates:
     input:
-        bam="tmp/{index}.paired_reads.sorted.bam"
+        bam="tmp/{index}.all_ds_reads.sorted.bam"
     resources:
-        mem = 32,
+        mem = 16,
         runtime = 48,
     output:
-        bam = "ms-aligned-bam/{index}.paired_reads.markdup.bam",
-        met = "metrics/{index}.paired_reads.marked_duplicates.txt",
+        bam = "ms-aligned-bam/{index}.ds_reads.markdup.bam",
+        met = "metrics/{index}.ds_reads.marked_duplicates.txt",
     shell:
         """
         {PICARD} MarkDuplicates I={input.bam} O={output.bam} M={output.met} CREATE_INDEX=true TAG_DUPLICATE_SET_MEMBERS=true TAGGING_POLICY=All
         """
 
+rule MergeSingleStrandReadGroup:
+    input:
+        lambda wildcard: expand("tmp/{batch_id}.{{index}}.singlestrands.sorted.bam", batch_id = sample_to_batch.loc[wildcard.index]['batch'])
+    output:
+        bam = temp("tmp/{index}.singlestrands.sorted.bam")
+    resources:
+        mem = 8,
+        runtime = 72,
+        ncores = 1
+    wildcard_constraints:
+        index = "[0-9a-zA-Z_-]+",
+    run:
+        if len(input) == 1:
+            shell("cp {input} {output.bam}")
+        else:
+            shell("samtools merge -@ {resources.ncores} {output.bam} {input}")
+
+rule MarkSingleStrandDuplicates:
+    input:
+        bam = "tmp/{index}.singlestrands.sorted.bam"
+    output:
+        bam = "ms-aligned-bam/{index}.singlestrands.markdup.bam",
+        met = "metrics/{index}.singlestrands.marked_duplicates.txt"
+    resources:
+        mem = 32,
+        runtime = 48,
+    shell:
+        """
+        {PICARD} MarkDuplicates I={input.bam} O={output.bam} M={output.met} CREATE_INDEX=true TAG_DUPLICATE_SET_MEMBERS=true TAGGING_POLICY=All
+        """
+
+rule CollectSingleStrandWgsMetrics:
+    input:
+        bam = "ms-aligned-bam/{index}.singlestrands.markdup.bam"
+    output:
+        txt = Metrics_OUT + "/{index}.singlestrands.wgs_metrics.txt"
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 4,
+        runtime = 48,
+        ncores = 1
+    shell:
+        """
+        {PICARD} CollectWgsMetrics I={input} O={output.txt} R={REF}
+        """
+
 rule OutputConvertedStrand:
     input:
-        bam = "ms-aligned-bam/{index}.paired_reads.markdup.bam",
+        bam = "ms-aligned-bam/{index}.ds_reads.markdup.bam",
     resources:
         mem = 4,
         runtime = 48,
@@ -275,12 +422,12 @@ rule OutputConvertedStrand:
         bam = "ms-aligned-bam/{index}.converted_strand.duplicate_removed.bam",
     shell:
         """
-        /xchip/bloodbiopsy/ruolin/link_duplex/ms-codec/get_methreads.py {input.bam} {output.bam}
+        {MSCODEC_GET_METHYL_READ} {input.bam} {output.bam}
         """
 
 rule CollectInsertSizeMetrics:
     input:
-        bam = "ms-aligned-bam/{index}.paired_reads.markdup.bam",
+        bam = "ms-aligned-bam/{index}.ds_reads.markdup.bam",
     output:
           txt = Metrics_OUT + "/{index}.raw.insert_size_metrics.txt",
           hist = Metrics_OUT + "/{index}.raw.insert_size_histogram.pdf"
@@ -297,10 +444,11 @@ rule BismarkExtractMethylation:
     resources:
         mem = 8,
         runtime = 96,
+        ncores = config['ncores']
     shell:
         """
         bismark_methylation_extractor -s --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
-            --bedGraph --gzip {input} -o bismark --zero_based --comprehensive
+            --bedGraph --gzip {input} -o bismark --zero_based --comprehensive --parallel {resources.ncores}
         """
 
 rule BismarkMethylationBedGraphMerge:
@@ -342,3 +490,88 @@ rule CDSByProduct:
            {AGG_METRICS_SCRIPT} --sample_id {params.sid} --trim_log {input.trim_log} \
            --highconf_bam {input.highconf_bam} > {output.met}
         """
+rule GroupReadByUMI:
+    input:
+        "tmp/{index}.ds_reads.sorted.bam"
+    output:
+        bam = temp("groupbyumi/{index}.GroupedByUmi.bam"),
+        histogram = Metrics_OUT + "/{index}.umiHistogram.txt"
+    resources:
+        mem = 8,
+        runtime = 32,
+        ncores = 2
+    shell:
+        """
+        {FGBIO} --compression 1 --async-io \
+             GroupReadsByUmi \
+            -i {input} \
+            -o {output.bam} \
+            -f {output.histogram} \
+            -m 0 \
+            --strategy=paired
+        """
+
+rule FgbioCollapseReadFamilies:
+    input:
+        "groupbyumi/{index}.GroupedByUmi.bam",
+    output:
+        "tmp/{index}.mol_consensus.bam"
+    params:
+        rg = "{index}"
+    resources:
+        mem = 8,
+        runtime = 48,
+        ncores = config['ncores']
+    shell:
+        """
+
+        {FGBIO} --compression 1 CallMolecularConsensusReads \
+            -i {input} \
+            -o {output} \
+            -p {params.rg} \
+            --threads {resources.ncores} \
+            --consensus-call-overlapping-bases false \
+            -M 1
+        """
+
+#rule AlignMolecularConsensusReads:
+#    input:
+#        "tmp/{index}.mol_consensus.bam"
+#    output:
+#        temp("tmp/{index}.mol_consensus.aligned.bam")
+#    params:
+#        reference = REF,
+#    resources:
+#        mem = 6,
+#        runtime = 96,
+#        ncores = 4
+#    shell:
+#        """
+#        samtools fastq {input} \
+#        | bwa mem -K 100000000 -t {resources.ncores} -p -Y {params.reference} - | samtools view -bS - -o {output}
+#        """
+#
+#rule MergeAndSortMoleculeConsensusReads:
+#    input:
+#        mapped = "tmp/{index}.mol_consensus.aligned.bam",
+#        unmapped =  "tmp/{index}.mol_consensus.bam"
+#    output:
+#        bam = "consensus/{index}.mol_consensus.aligned.bam",
+#        bai = "consensus/{index}.mol_consensus.aligned.bam.bai"
+#    params:
+#        reference = REF,
+#    resources:
+#        mem = 4,
+#        runtime = 96,
+#        ncores = config['ncores']
+#    shell:
+#        """
+#        {FGBIO} --compression 0 --async-io ZipperBams \
+#            -i {input.mapped} \
+#            --unmapped {input.unmapped} \
+#             --ref {params.reference} \
+#             --tags-to-reverse Consensus \
+#             --tags-to-revcomp Consensus \
+#        | samtools sort - -o {output.bam} -O BAM -@ {resources.ncores} && samtools index {output.bam} -@ {resources.ncores}
+#        """
+

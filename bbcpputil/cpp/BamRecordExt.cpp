@@ -690,7 +690,13 @@ SeqLib::BamRecord BwaAlignment2BamRecord(const mem_aln_t& a, const std::string& 
   b.shared_pointer()->core.pos = a.pos;
   b.shared_pointer()->core.qual = a.mapq;
   b.shared_pointer()->core.flag = a.flag;
-  b.shared_pointer()->core.n_cigar = a.n_cigar;
+  if (a.n_cigar == 32766) {
+    std::cerr << "number of cigar " << a.n_cigar << std::endl;
+    std::cerr << new_seq  << std::endl;
+    b.shared_pointer()->core.n_cigar = 0;
+  } else {
+    b.shared_pointer()->core.n_cigar = a.n_cigar;
+  }
 
   // set dumy mate
   b.shared_pointer()->core.mtid = -1;
@@ -712,7 +718,7 @@ SeqLib::BamRecord BwaAlignment2BamRecord(const mem_aln_t& a, const std::string& 
 
   // allocate the cigar. Reverse if aligned to neg strand, since mem_aln_t stores
   // cigars relative to referemce string oreiatnion, not forward alignment
-  memcpy(b.shared_pointer()->data + b.shared_pointer()->core.l_qname, (uint8_t*)a.cigar, a.n_cigar<<2);
+  memcpy(b.shared_pointer()->data + b.shared_pointer()->core.l_qname, (uint8_t*)a.cigar, b.shared_pointer()->core.n_cigar<<2);
 
   // convert N to S or H
   int new_val =  BAM_CSOFT_CLIP;
@@ -780,8 +786,9 @@ SeqLib::BamRecord BwaAlignment2BamRecord(const mem_aln_t& a, const std::string& 
   //b.AddIntTag("NA", ar.n); // number of matches
   b.AddIntTag("NM", a.NM);
 
-  if (a.XA)
-    b.AddZTag("XA", std::string(a.XA));
+//  if (a.XA) {
+//    b.AddZTag("XA", std::string(a.XA));
+//  }
 
   // add num sub opt
   //b.AddIntTag("SB", ar.a[i].sub_n);

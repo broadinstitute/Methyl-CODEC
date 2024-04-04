@@ -68,6 +68,7 @@ struct AccuOptions {
   string context_count;
   string known_var_out;
   string sample;
+  string region_level_output;
   string read_level_stat;
   string cycle_level_stat;
   string preset;
@@ -128,7 +129,6 @@ struct AccuOptions {
 static struct option  accuracy_long_options[] = {
     {"bam",                      required_argument,      0,        'b'},
     {"normal_bam",               required_argument,      0,        'n'},
-//    {"raw_bam",                  required_argument,      0,        'l'},
     {"bed",                      required_argument,      0,        'L'},
     {"preset",                   required_argument,      0,        'p'},
     {"mutation_metrics",         required_argument,      0,        'a'},
@@ -177,12 +177,13 @@ static struct option  accuracy_long_options[] = {
     {"verbose",                  required_argument,      0,        'v'},
     {"all_mutant_frags",         no_argument,             0,        'A'},
 //    {"detail_qscore_prof",       no_argument,            0,        OPT_QSCORE_PROF},
+    {"region_level_stat",          required_argument,      0,        'l'},
     {"read_level_stat",          required_argument,      0,        OPT_READ_LEVEL_STAT},
     {"cycle_level_stat",         required_argument,      0,        OPT_CYCLE_LEVEL_STAT},
 //   {"accu_burden",         no_argument,      0,        OPT_ACCU_BURDEN},
     {0,0,0,0}
 };
-const char* accuracy_short_options = "b:a:m:v:S2uo:r:e:q:k:R:M:p:d:n:x:V:L:DC:N:5:Q:g:G:I:c:B:Y:W:U:f:i:sPE:";
+const char* accuracy_short_options = "b:a:m:v:S2uo:r:e:q:k:R:M:p:d:n:x:V:L:DC:N:5:Q:g:G:I:c:B:Y:W:U:f:i:sPE:l:";
 
 void accuracy_print_help()
 {
@@ -192,7 +193,6 @@ void accuracy_print_help()
   std::cerr<< "-p/--preset,                           options preset. choice of [stringent, lenient, null]\n";
   std::cerr<< "-b/--bam,                              input bam\n";
   std::cerr<< "-n/--normal_bam,                       input normal bam [optional]\n";
-//  std::cerr<< "-l/--raw_bam,                          input raw bam [optional]\n";
   std::cerr<< "-L/--bed,                              targeted region\n";
   std::cerr<< "-o/--output,                           output prefix. -a, -e, -C overwrite this options [null].\n";
   std::cerr<< "-r/--reference,                        reference sequence in fasta format [null].\n";
@@ -208,6 +208,7 @@ void accuracy_print_help()
   std::cerr<< "-U/--MID_tag,                          molecular identifier tag name [MI] (MI is used in fgbio). This is only used when -D is on. During this mode, reads will\n";
   std::cerr<< "-M/--maf,                              MAF file for somatic variants [null].\n";
   std::cerr<< "-k/--known_var_out,                    Output variants which match the blacklist vcfs (from -V). [default null].\n";
+  std::cerr<< "-l/--region_level_output,              Output mutation metrics per region  [optional]\n";
 
   std::cerr<< "\nFiltering Options:\n";
   std::cerr<< "-S/--load_supplementary,               include supplementary alignment [false].\n";
@@ -269,9 +270,9 @@ int accuracy_parse_options(int argc, char* argv[], AccuOptions& opt) {
       case 'n':
         opt.germline_bam = optarg;
         break;
-//      case 'l':
-//        opt.raw_bam = optarg;
-//        break;
+      case 'l':
+        opt.region_level_output = optarg;
+        break;
       case 'L':
         opt.bed_file = optarg;
         break;
@@ -366,6 +367,7 @@ int accuracy_parse_options(int argc, char* argv[], AccuOptions& opt) {
         opt.standard_ngs_filter = true;
         break;
       case 'I':
+        std::cerr << optarg << std::endl;
         opt.min_indel_len = atoi(optarg);
         break;
       case 'R':
@@ -414,6 +416,10 @@ int accuracy_parse_options(int argc, char* argv[], AccuOptions& opt) {
         return 1;
     }
   } while (next_option != -1);
+
+  for(int i = option_index; i < argc; i++) {
+    printf("Unknown argument: %s\n", argv[i]);
+  }
 
   return 0;
 }
@@ -465,6 +471,7 @@ int n_true_mut(vector<bool> v) {
   return count(v.begin(), v.end(), true);
 }
 
+// simplify this function
 void ErrorRateDriver(vector<cpputil::Segments>& frag,
                     const int pair_nmismatch,
                     const float nqpass,
@@ -609,7 +616,7 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
       //string aux_output = aux_prefix + "\t" + std::to_string(primary_score) + "\t"  + std::to_string(sec_as);
 
       //pass alignment filters
-      int nerr = 0;
+      //int nerr = 0;
       //R1R2 filter
       if (readpair_var.size() == 1) { // var in only one read
         if (opt.count_read == 0) {
@@ -627,6 +634,16 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
           }
         }
       }
+
+      int protected_strand_orientation =  -1; // 0 for forward, 1 for reverse, -1 for unknown
+      uint8_t* xm1 = bam_aux_get(seg[0].raw(),"XM");
+      uint8_t* xm2 = bam_aux_get(seg[1].raw(),"XM");
+      if (xm1 and !xm2) {
+        protected_strand_orientation = int(seg[1].ReverseFlag());
+      } else if (!xm1 and xm2) {
+        protected_strand_orientation = int(seg[0].ReverseFlag());
+      }
+      std::string protected_strand_orientation_str = std::to_string(protected_strand_orientation);
 
       int germ_support = 0, germ_depth = std::numeric_limits<int>::max();
       int site_depth = 0;
@@ -708,7 +725,8 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                                                   "PRI_VCF",
                                                   true,
                                                   opt.bqual_min,
-                                                  opt.all_mutant_frags);
+                                                  opt.all_mutant_frags,
+                                                  protected_strand_orientation_str);
           if (vcf_found[0]) {
             errorstat.nindel_masked_by_vcf1 += 1;
             continue;
@@ -721,7 +739,8 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                                                   "SEC_VCF",
                                                   true,
                                                   opt.bqual_min,
-                                                  opt.all_mutant_frags);
+                                                  opt.all_mutant_frags,
+                                                  protected_strand_orientation_str);
           if (vcf_found[0]) continue;
         }
         if (mafr.IsOpen()) {
@@ -731,7 +750,8 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                                                   "MAF",
                                                   true,
                                                   opt.bqual_min,
-                                                  opt.all_mutant_frags);
+                                                  opt.all_mutant_frags,
+                                                  protected_strand_orientation_str);
           if (vcf_found[0]) {
             errorstat.nindel_masked_by_maf += 1;
             continue;
@@ -806,7 +826,7 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
         if (opt.count_read == 0 ) {
           qtxt = cpputil::QualContext(var, seg, 3);
         }
-        ferr << var << '\t' << aux_prefix << '\t' << qtxt.first << '\t' <<qtxt.second << "\t" << site_depth << "\t" << germ_depth << '\n';
+        ferr << var << '\t' << aux_prefix << '\t' << qtxt.first << '\t' <<qtxt.second << "\t" << site_depth << "\t" << germ_depth << "\t-1" <<'\n';
       } else { // SNV
         if (var.var_qual < opt.bqual_min * var.read_count) {
           errorstat.snv_filtered_baseq += var.alt_seq.size();
@@ -820,7 +840,7 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                                                                "PRI_VCF",
                                                                true,
                                                                opt.bqual_min,
-                                                               opt.all_mutant_frags);
+                                                               opt.all_mutant_frags, protected_strand_orientation_str);
           if (n_true_mut(found)> 0) {
             errorstat.nsnv_masked_by_vcf1 += var.alt_seq.size();
             continue;
@@ -833,7 +853,7 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                                                                "SEC_VCF",
                                                                true,
                                                                opt.bqual_min,
-                                                               opt.all_mutant_frags);
+                                                               opt.all_mutant_frags, protected_strand_orientation_str);
           if (n_true_mut(found)> 0) continue;
         }
         if (mafr.IsOpen()) {
@@ -843,7 +863,7 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                                                                "MAF",
                                                                true,
                                                                opt.bqual_min,
-                                                               opt.all_mutant_frags);
+                                                               opt.all_mutant_frags, protected_strand_orientation_str);
           if (n_true_mut(found) > 0) {
             errorstat.nsnv_masked_by_maf += 1;
             continue;
@@ -932,20 +952,27 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
                 continue;
               }
         }
-        nerr += var.alt_seq.size();
+        int nerr = var.alt_seq.size();
+        if (opt.count_read == 2) {
+          errorstat.nsnv_error += nerr * var.read_count;
+        } else {
+          errorstat.nsnv_error += nerr;
+        }
+
         if (opt.count_read == 0) {
           qtxt = cpputil::QualContext(var, seg, 3);
         }
-        ferr << var << '\t' << aux_prefix << '\t' <<  qtxt.first << '\t' <<qtxt.second << "\t" << site_depth << "\t" << germ_depth << '\n';
-      }
-      if (opt.count_read == 2) {
-        errorstat.nsnv_error += nerr * var.read_count;
-      } else {
-        errorstat.nsnv_error += nerr;
-      }
 
-      // other error profiles
-      if (var.Type() == "SNV") {
+        ferr << var << '\t' << aux_prefix << '\t' <<  qtxt.first << '\t' <<qtxt.second << "\t" << site_depth << "\t" \
+              << germ_depth << "\t" << protected_strand_orientation << '\n';
+        for (size_t i = 0; i< var.alt_seq.size(); ++i) {
+          if (opt.count_read == 2) {
+            errorstat.monomer_mut_counter[{var.contig_seq[i], '>', var.alt_seq[i]}] += var.read_count;
+          } else {
+            ++errorstat.monomer_mut_counter[{var.contig_seq[i], '>', var.alt_seq[i]}];
+          }
+        }
+        // other error profiles
         if (!opt.read_level_stat.empty()) {
           if (var.var_qual >= opt.bqual_min * var.read_count && (seg.size() == 1 || readpair_var.size() == 2)) {
             if (var.read_count == 2) {
@@ -968,7 +995,8 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
             var.second_of_pair ? errorstat.R2_q30_error[tpos] += nerr: errorstat.R1_q30_error[tpos] += nerr;
           }
         }
-      } //end other profiles
+        //end other profiles
+      }
     }
 
     if (readlevel.is_open()) {
@@ -1096,14 +1124,20 @@ int codec_accuracy(int argc, char ** argv) {
   std::ofstream known;
   std::ofstream readlevel;
   std::ofstream cyclelevel;
+  std::ofstream regionlevel;
   string error_profile_header =
-      "chrom\tref_pos\tref\talt\ttype\tdist_to_fragend\tsnv_base_qual\tread_count\tread_name\tfamily_size\tnumN\tnumQpass\tclen\tflen\tqual3p\tqual5p\tsite_depth\tgerm_depth";
+      "chrom\tref_pos\tref\talt\ttype\tdist_to_fragend\tsnv_base_qual\tread_count\tread_name\tfamily_size\tnumN\tnumQpass\tclen\tflen\tqual3p\tqual5p\tsite_depth\tgerm_depth\tpstrand_orientation";
   ferr << "#" << cmdline << std::endl;
   ferr << error_profile_header << std::endl;
+
+  if (not opt.region_level_output.empty()) {
+    regionlevel.open(opt.region_level_output);
+    regionlevel << "chrom\tstart\tend\ttotal_base\tgc_count\ttotal_snv\tc2t_count\tc2a_count\tc2g_count\tcpg_count\tn_refA\tn_refC\tn_refG\tn_refT\n";
+  }
   if (not opt.known_var_out.empty()) {
     known.open(opt.known_var_out);
     string known_var_header =
-        "chrom\tref_pos\tref\talt\ttype\tread_pos\tsnv_base_qual\tfirst_of_pair\tread_name\tevidence";
+        "chrom\tref_pos\tref\talt\ttype\tread_pos\tsnv_base_qual\tread_count\tread_name\tfamily_size\tevidence\tpstrand_orientation";
     known << known_var_header << std::endl;
   }
   if (not opt.read_level_stat.empty()) {
@@ -1112,6 +1146,7 @@ int codec_accuracy(int argc, char ** argv) {
         "read_name\tR1_nerror\tR2_nerror\tR1_efflen\tR2_efflen\tpair_nmismatch\tfraglen\toverlap_len";
     readlevel << read_level_header << std::endl;
   }
+
   if (not opt.cycle_level_stat.empty()) {
     cyclelevel.open(opt.cycle_level_stat);
     cyclelevel << "cycle\tR1_q0_error\tR1_q0_cov\tR1_q30_error\tR1_q30_cov\t"
@@ -1146,6 +1181,8 @@ int codec_accuracy(int argc, char ** argv) {
   int last_end = 0;
   cpputil::UniqueQueue readpair_cnt(100000);
   cpputil::UniqueQueue failed_cnt(100000);
+  int64_t last_base_count = 0, last_gc_count = 0, last_snv_count = 0, last_c2t_count = 0, last_cpg_count = 0, \
+          last_c2g_count = 0, last_c2a_count = 0;
   for (unsigned i = 0; i < tl.NumRegion(); ++i) {
     const auto& gr = tl[i];
     if (gr.chr != last_chrom || gr.pos1 - last_end > 1e4) {
@@ -1212,6 +1249,31 @@ int codec_accuracy(int argc, char ** argv) {
                           errorstat);
         }
       } // end for
+      if (regionlevel.is_open()) {
+        regionlevel << gr.ChrName(isf.bamheader()) <<"\t" << gr.pos1 << "\t" << gr.pos2 << "\t" \
+                << errorstat.neval - last_base_count << "\t" \
+                << errorstat.base_counter['C'] + errorstat.base_counter['G'] - last_gc_count << "\t" \
+                << errorstat.nsnv_error - last_snv_count << "\t" \
+                << errorstat.monomer_mut_counter["C>T"] + errorstat.monomer_mut_counter["G>A"] - last_c2t_count << "\t" \
+                << errorstat.monomer_mut_counter["C>A"] + errorstat.monomer_mut_counter["G>T"] - last_c2a_count << "\t" \
+                << errorstat.monomer_mut_counter["C>G"] + errorstat.monomer_mut_counter["G>C"] - last_c2g_count << "\t" \
+                << errorstat.doublet_counter["CG"] - last_cpg_count << "\t";
+        last_base_count =  errorstat.neval;
+        last_gc_count = errorstat.base_counter['C'] + errorstat.base_counter['G'];
+        last_snv_count = errorstat.nsnv_error;
+        last_c2t_count = errorstat.monomer_mut_counter["C>T"] + errorstat.monomer_mut_counter["G>A"];
+        last_c2a_count = errorstat.monomer_mut_counter["C>A"] + errorstat.monomer_mut_counter["G>T"];
+        last_c2g_count = errorstat.monomer_mut_counter["C>G"] + errorstat.monomer_mut_counter["G>C"];
+        last_cpg_count = errorstat.doublet_counter["CG"];
+
+        auto region_ref = ref.QueryRegion(gr.ChrName(isf.bamheader()), gr.pos1, gr.pos2-1);
+        std::map<char, int> refchar_counter;
+        for (const char c : region_ref) {
+          ++refchar_counter[toupper(c)];
+        }
+        regionlevel << refchar_counter['A'] << "\t" << refchar_counter['C'] << "\t" << refchar_counter['G'] << "\t" \
+                    << refchar_counter['T'] << "\n";
+      }
     } //end if
   } //end for
 

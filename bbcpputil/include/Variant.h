@@ -46,7 +46,7 @@ struct Variant {
   int32_t read_count;
   int32_t dist_to_fragend;
   int32_t r1_start, r2_start;
-  int bs_converted; // loses it smeaning after squash_vars()
+  int bs_converted; // loses its meaning after squash_vars()
 
   Variant(std::string ctg,
           int32_t cstart,
@@ -365,7 +365,7 @@ Variant squash_vars(const std::vector<Variant>& vars) {
     } else {
       ret.alt_seq = std::string("G", vars[0].alt_seq.size());
     }
-    std::cerr<<"found meth base " << ret << std::endl;
+    //std::cerr<<"found meth base " << ret << std::endl;
   }
   return ret;
 }
@@ -410,11 +410,14 @@ std::vector<Variant> GetVar(const SeqLib::BamRecord &rec, const SeqLib::BamHeade
 
   std::string refgapstr, readgapstr, qualgapstr;
   int refpos = 0, readpos = 0;
+
   int bs_cvt = 0;
-  bool bs_cvt_flag = rec.GetIntTag("XC", bs_cvt);
-  if (not bs_cvt_flag) {
-    throw std::runtime_error("Not methylation data\n");
-  }
+  // check if rec has a Tag XM
+  uint8_t* p = bam_aux_get(rec.raw(),"XM");
+  if (p) bs_cvt = 1;
+//  if (not bs_cvt_flag) {
+//    throw std::runtime_error("Not methylation data\n");
+//  }
   for (auto cit = cigar.begin(); cit != cigar.end(); ++cit) {
     if (cit->Type() == 'M' or cit->Type() == '=' or cit->Type() == 'X') {
       refgapstr = refstr.substr(refpos, cit->Length());

@@ -12,7 +12,7 @@ def get_arguments():
 
     parser = argparse.ArgumentParser(prog="foo", formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("interval_bed", type=str, help="the bed file which is to be queried")
-    parser.add_argument("query_bed", type=str, help="interval bed")
+    parser.add_argument("methylation_levels", type=str, help="methylation levels bed")
     args = parser.parse_args()
     return args
 
@@ -51,8 +51,9 @@ def group_overlapping_entries(bed1_path, bed2_path):
     return grouped_entries
 
 def process(options):
-    result = group_overlapping_entries(options.interval_bed, options.query_bed)
-
+    result = group_overlapping_entries(options.interval_bed, options.methylation_levels)
+    #header="\t".join(['chrom', 'start', 'end', 'name', 'length', 'cpgNum', 'gcNum', 'perCpG', 'perGC', 'obsExp', 'met_count', 'unmet_count', 'total_count', 'per_met'])
+    #print(header)
     for key, values in result.items():
         met_count = 0
         unmet_count = 0
@@ -66,8 +67,8 @@ def process(options):
             perc_met = met_count/(met_count + unmet_count)
         except ZeroDivisionError:
             perc_met = "NA"
-        keystr = ",".join(key)
-        print(f"{keystr},{met_count},{unmet_count},{met_count+unmet_count},{perc_met}")
+        keystr = "\t".join(key)
+        print(f"{keystr}\t{met_count}\t{unmet_count}\t{met_count+unmet_count}\t{perc_met}")
 
 if __name__ == '__main__':
     sys.exit(process(get_arguments()))

@@ -51,12 +51,12 @@ struct FastxRecord {
     }
     std::string umiseq;
     std::string umiqual;
-    if (br.GetZTag("RX", umiseq)) {
-      bool status = br.GetZTag("QX", umiqual);
-      if (!status) {
-        umiqual = std::string('I', umiseq.size());
-      }
-      if (duplex_umi) {
+    if (duplex_umi) {
+      if (br.GetZTag("RX", umiseq)) {
+        bool status = br.GetZTag("QX", umiqual);
+        if (!status) {
+          umiqual = std::string('I', umiseq.size());
+        }
         auto umiseqs = cpputil::split(umiseq, "-");
         auto umi1_qual = umiqual.substr(0, umiseqs[0].size());
         auto umi2_qual = umiqual.substr(umiseqs[0].size()+1, umiseqs[1].size());
@@ -67,9 +67,6 @@ struct FastxRecord {
           seq = umiseqs[1] + seq;
           qual = umi2_qual + qual;
         }
-      } else {
-        seq = umiseq + seq;
-        qual = umiqual + qual;
       }
     }
   }

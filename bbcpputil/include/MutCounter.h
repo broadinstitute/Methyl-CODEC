@@ -37,6 +37,7 @@ struct ErrorStat {
   std::vector<int64_t> R2_q0_error;
   std::vector<int64_t> R2_q30_error;
   std::map<char, int64_t> base_counter;
+  std::map<std::string, int64_t> monomer_mut_counter;
   std::map<std::string, int64_t> triplet_counter;
   std::map<std::string, int64_t> doublet_counter;
   //qscore cutoff -> read1, read2

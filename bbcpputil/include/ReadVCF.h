@@ -308,16 +308,16 @@ bool all_true_mut(vector<bool> v) {
 
 template<class VariantsReader>
 std::vector<bool> search_var_in_database(const VariantsReader& variant_reader, const cpputil::Variant& var, std::ofstream& outf,
-                            std::string anno, bool fall_back_pos_only, int min_baseq, bool out_all_snps) {
+                            std::string anno, bool fall_back_pos_only, int min_baseq, bool out_all_snps, std::string aux_info = "") {
   std::vector<bool> real_muts(var.alt_seq.size());
   if (variant_reader.var_exist(var.contig, var.contig_start, var.alt_seq)) { // known var
     if (var.isIndel()) {
-      if (outf.is_open()) outf << var << '\t' << anno << '\n';
+      if (outf.is_open()) outf << var << '\t' << anno << '\t' << aux_info << '\n';
       return {true};
     }
     else {
       std::fill(real_muts.begin(), real_muts.end(), true);
-      if (outf.is_open() && (out_all_snps || var.var_qual >= min_baseq)) outf << var << '\t' << anno << '\n';
+      if (outf.is_open() && (out_all_snps || var.var_qual >= min_baseq)) outf << var << '\t' << anno << '\t' << aux_info<< '\n';
     }
   } else {
     if (var.isMNV()) { // rescue if MNV
@@ -325,7 +325,7 @@ std::vector<bool> search_var_in_database(const VariantsReader& variant_reader, c
       for (unsigned i =0 ; i < avars.size(); ++i) {
         if (variant_reader.var_exist(avars[i].contig, avars[i].contig_start, avars[i].alt_seq)) {
           real_muts[i] = true;
-          if (outf.is_open() and (out_all_snps || avars[i].var_qual >= min_baseq)) outf << avars[i] << '\t' << anno << '\n';
+          if (outf.is_open() and (out_all_snps || avars[i].var_qual >= min_baseq)) outf << avars[i] << '\t' << anno << '\t' << aux_info << '\n';
         } else if (fall_back_pos_only && variant_reader.var_exist(avars[i].contig, avars[i].contig_start)) {
           real_muts[i] = true;
         }
