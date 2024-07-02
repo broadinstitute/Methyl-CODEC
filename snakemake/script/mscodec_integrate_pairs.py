@@ -107,6 +107,10 @@ def merge_single_alignments(inbam, outbam, im_dist_cutoff = 5_000, adap_v2 = Fal
 
     for read1, read2 in read_pair_generator(unpaired_bam):
         total_frag += 1
+        if read1.has_tag('XM'):
+            read1.set_tag('XC', 1, value_type='i')
+        else:
+            read1.set_tag('XC', 0, value_type='i')
         if not read2:
             #read1 could be read1 or read2
             read1.flag |= 1
@@ -122,6 +126,10 @@ def merge_single_alignments(inbam, outbam, im_dist_cutoff = 5_000, adap_v2 = Fal
         assert read1.is_read1 or "/1" in read1.query_name
         assert read2.is_read2 or "/2" in read2.query_name
 
+        if read2.has_tag('XM'):
+            read2.set_tag('XC', 1, value_type='i')
+        else:
+            read2.set_tag('XC', 0, value_type='i')
 
         read1.flag |= 1
         read2.flag |= 1

@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import sys
+import pysam
 
 logger = logging.getLogger("{}".format(__file__))
 
@@ -11,7 +12,8 @@ def get_arguments():
 
     parser = argparse.ArgumentParser(prog="foo", formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("bam", type=str, help="input bam file")
-    parser.add_argument("output", type=str, help="output bam file")
+    parser.add_argument("methyl", type=str, help="methyl reads bam output file")
+    parser.add_argument("regular", type=str, help="regular reads bam output file")
     args = parser.parse_args()
     return args
 
@@ -22,32 +24,35 @@ def absolute_path(path):
     else:
         return os.path.join(os.getcwd(), path)
 
-import pysam
 
-def filter_reads_by_tag(input_bam, output_bam, tag_name):
+def filter_reads_by_tag(input_bam, methyl_bam, regular_bam, tag_name):
     # Open the input BAM file
     with pysam.AlignmentFile(input_bam, 'rb') as infile:
         # Create an output BAM file
-        with pysam.AlignmentFile(output_bam, 'wb', header=infile.header) as outfile:
+        with pysam.AlignmentFile(methyl_bam, 'wb', header=infile.header) as outfile, pysam.AlignmentFile(regular_bam, 'wb', header=infile.header) as outfile2:
             # Iterate through reads
             for read in infile:
                 # Check if the specified tag is present in the read
+                if read.is_duplicate:
+                    continue
+                #make read single end
+                if read.is_reverse:
+                    read.flag = 16
+                else:
+                    read.flag = 0
+                if read.is_secondary:
+                    read.flag += 256
+                if read.is_supplementary:
+                    read.flag += 2048
+                read.next_reference_id = -1
+                read.next_reference_start = -1
+                read.template_length = 0
+                #output read
                 if read.has_tag(tag_name):
-                    # Check if the tag value matches the desired value
-                    if read.has_tag(tag_name) and not read.is_duplicate:
-                        # Write the read to the output BAM file
-                        if read.is_reverse:
-                            read.flag = 16
-                        else:
-                            read.flag = 0
-                        if read.is_secondary:
-                            read.flag += 256
-                        if read.is_supplementary:
-                            read.flag += 2048
-                        read.next_reference_id = -1
-                        read.next_reference_start = -1
-                        read.template_length = 0
-                        outfile.write(read)
+                    outfile.write(read)
+                else:
+                    outfile2.write(read)
+        # Write the read to the output BAM file
 
 
 
@@ -55,7 +60,7 @@ def process(options):
   # Example usage
   tag_to_filter = 'XM'  # Replace with your desired tag
   
-  filter_reads_by_tag(options.bam, options.output, tag_to_filter)
+  filter_reads_by_tag(options.bam, options.methyl, options.regular, tag_to_filter)
 
 if __name__ == '__main__':
     sys.exit(process(get_arguments()))

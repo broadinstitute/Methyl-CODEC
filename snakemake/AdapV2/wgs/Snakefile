@@ -7,11 +7,13 @@ rule all:
     input:
         expand("ms-aligned-bam/{index}.converted_strand.duplicate_removed.bam", index=sample_names),
         expand(ADAPTER_TRIM_OUT + "/{batch_id}.{index}.trim.log", index=sample_names, batch_id=batch_ids),
-        expand("tmp/{batch_id}.{index}.msalign.log",index=sample_names, batch_id=batch_ids),
-        expand("bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.nodecoy.strand_merge.cov", index=sample_names),
+        expand(Metrics_OUT + "/{batch_id}.{index}.msalign.log",index=sample_names, batch_id=batch_ids),
+        expand("bismark/{index}.converted_strand.duplicate_removed.nodecoy.strand_merge.cov", index=sample_names),
         expand(Metrics_OUT + "/{index}.raw.insert_size_metrics.txt", index=sample_names),
-        expand(Metrics_OUT + "/{index}.{datatype}.wgs_metrics.txt",index=sample_names, datatype=["ds_reads", "singlestrands"]),
-        expand("raw_sfc/{index}.mutant_metrics.txt", index=sample_names)
+        expand(Metrics_OUT + "/byproduct/{batch_id}.{index}.byproduct.txt", index=sample_names, batch_id=batch_ids),
+        expand(Metrics_OUT + "/{index}.{datatype}.wgs_metrics.txt",index=sample_names, datatype=["ds_reads", "converted_strand_only", "protected_strand_only"]),
+        expand("bismark/{index}.converted_strand_only.duplicate_removed.CpG_report.txt.gz",index=sample_names),
+        #expand("raw_sfc/{index}.mutant_metrics.txt", index=sample_names)
 
 rule CollectWgsMetrics:
     input:
@@ -26,10 +28,49 @@ rule CollectWgsMetrics:
           runtime = 96
     shell:
          """
-         {PICARD} CollectWgsMetrics I={input.bam} O={output.metrics} R={params.ref} INTERVALS={params.itl}
+         {PICARD} CollectWgsMetrics I={input.bam} O={output.metrics} R={params.ref} INTERVALS={params.itl} \
+         COUNT_UNPAIRED=true MINIMUM_BASE_QUALITY=0 MINIMUM_MAPPING_QUALITY=0 
          """
 
+rule CollectSinglePStrandWgsMetrics:
+    input:
+        bam = "ms-aligned-bam/{index}.protected_strand_only.markdup.bam"
+    output:
+        txt = Metrics_OUT + "/{index}.protected_strand_only.wgs_metrics.txt"
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    params:
+        itl = EVAL_REGION_IL
+    resources:
+        mem = 16,
+        runtime = 48,
+        ncores = 1
+    shell:
+        """
+        {PICARD} CollectWgsMetrics I={input} O={output.txt} R={REF} INTERVALS={params.itl} \
+         COUNT_UNPAIRED=true MINIMUM_BASE_QUALITY=0 MINIMUM_MAPPING_QUALITY=0 
+        """
 
+rule CollectSingleOStrandWgsMetrics:
+    input:
+        bam = "ms-aligned-bam/{index}.converted_strand_only.markdup.bam"
+    output:
+        txt = Metrics_OUT + "/{index}.converted_strand_only.wgs_metrics.txt"
+    wildcard_constraints:
+        batch_id = "[0-9a-zA-Z_-]+",
+        index = "[0-9a-zA-Z_-]+"
+    resources:
+        mem = 16,
+        runtime = 48,
+        ncores = 1
+    params:
+        itl = EVAL_REGION_IL
+    shell:
+        """
+        {PICARD} CollectWgsMetrics I={input} O={output.txt} R={REF} INTERVALS={params.itl} \
+         COUNT_UNPAIRED=true MINIMUM_BASE_QUALITY=0 MINIMUM_MAPPING_QUALITY=0 
+        """
 rule CollectFinalWgsMetrics:
     input:
          bam = "consensus/{index}.mol_consensus.aligned.bam",
@@ -38,9 +79,14 @@ rule CollectFinalWgsMetrics:
     params:
           ref = REF,
           itl = EVAL_REGION_IL
+    resources:
+        mem = 16,
+        runtime = 48,
+        ncores = 1
     shell:
          """
-         {PICARD} CollectWgsMetrics I={input.bam} O={output.metrics} R={params.ref} INTERVALS={params.itl} INCLUDE_BQ_HISTOGRAM=true MINIMUM_BASE_QUALITY=30
+         {PICARD} CollectWgsMetrics I={input.bam} O={output.metrics} R={params.ref} INTERVALS={params.itl} INCLUDE_BQ_HISTOGRAM=true \
+         COUNT_UNPAIRED=true MINIMUM_BASE_QUALITY=0 MINIMUM_MAPPING_QUALITY=0 
          """
 #
 rule CSS_SFC_ErrorMetrics:
@@ -99,7 +145,7 @@ rule RAW_SFC_ErrorMetrics:
           #germ_vcf = lambda wildcards : sample_to_germvcf.loc[wildcards.index]['germline_vcf'],
     resources:
              mem = 16,
-             runtime = 96
+             runtime = 168
     shell:
          """
             {CALL_BIN}  -b {input.bam} \
