@@ -36,6 +36,7 @@
 #include "MutCounter.h"
 #include "Algo.h"
 #include "pileup.h"
+#include "MethylAlignment.h"
 
 //#define OPT_QSCORE_PROF   261
 #define OPT_READ_LEVEL_STAT   262
@@ -553,6 +554,8 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
       ++errorstat.n_pass_filter_singles;
     }
 
+    int protected_strand_orientation = cpputil::GetProtectedStrandOrientation(seg);
+    string protected_strand_orientation_str = std::to_string(protected_strand_orientation);
     //for readlevel output
     //int r1_q0_den = 0, r2_q0_den = 0;
     //int r1_q0_nerror = 0, r2_q0_nerror = 0;
@@ -566,11 +569,13 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
 
     std::string aux_prefix = std::to_string(pair_nmismatch) + "\t" + std::to_string(nqpass) +
         "\t" + std::to_string(olen) + "\t" + std::to_string(abs(seg[0].InsertSize()));
+
     if (opt.count_read) {
       errorstat.neval += r1_den + r2_den;
     } else {
       errorstat.neval += r1_den;
     }
+
     errorstat.qcut_neval[0].first += q0den.first;
     errorstat.qcut_neval[0].second += q0den.second;
     if (opt.bqual_min > 0) {
@@ -635,15 +640,6 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
         }
       }
 
-      int protected_strand_orientation =  -1; // 0 for forward, 1 for reverse, -1 for unknown
-      uint8_t* xm1 = bam_aux_get(seg[0].raw(),"XM");
-      uint8_t* xm2 = bam_aux_get(seg[1].raw(),"XM");
-      if (xm1 and !xm2) {
-        protected_strand_orientation = int(seg[1].ReverseFlag());
-      } else if (!xm1 and xm2) {
-        protected_strand_orientation = int(seg[0].ReverseFlag());
-      }
-      std::string protected_strand_orientation_str = std::to_string(protected_strand_orientation);
 
       int germ_support = 0, germ_depth = std::numeric_limits<int>::max();
       int site_depth = 0;
@@ -954,10 +950,9 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
         }
         int nerr = var.alt_seq.size();
         if (opt.count_read == 2) {
-          errorstat.nsnv_error += nerr * var.read_count;
-        } else {
-          errorstat.nsnv_error += nerr;
+          nerr *= var.read_count;
         }
+        errorstat.nsnv += nerr;
 
         if (opt.count_read == 0) {
           qtxt = cpputil::QualContext(var, seg, 3);
@@ -965,13 +960,13 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
 
         ferr << var << '\t' << aux_prefix << '\t' <<  qtxt.first << '\t' <<qtxt.second << "\t" << site_depth << "\t" \
               << germ_depth << "\t" << protected_strand_orientation << '\n';
-        for (size_t i = 0; i< var.alt_seq.size(); ++i) {
-          if (opt.count_read == 2) {
-            errorstat.monomer_mut_counter[{var.contig_seq[i], '>', var.alt_seq[i]}] += var.read_count;
-          } else {
-            ++errorstat.monomer_mut_counter[{var.contig_seq[i], '>', var.alt_seq[i]}];
-          }
-        }
+//        for (size_t i = 0; i< var.alt_seq.size(); ++i) {
+//          if (opt.count_read == 2) {
+//            errorstat.monomer_mut_counter[{var.contig_seq[i], '>', var.alt_seq[i]}] += var.read_count;
+//          } else {
+//            ++errorstat.monomer_mut_counter[{var.contig_seq[i], '>', var.alt_seq[i]}];
+//          }
+//        }
         // other error profiles
         if (!opt.read_level_stat.empty()) {
           if (var.var_qual >= opt.bqual_min * var.read_count && (seg.size() == 1 || readpair_var.size() == 2)) {
@@ -1249,31 +1244,31 @@ int codec_accuracy(int argc, char ** argv) {
                           errorstat);
         }
       } // end for
-      if (regionlevel.is_open()) {
-        regionlevel << gr.ChrName(isf.bamheader()) <<"\t" << gr.pos1 << "\t" << gr.pos2 << "\t" \
-                << errorstat.neval - last_base_count << "\t" \
-                << errorstat.base_counter['C'] + errorstat.base_counter['G'] - last_gc_count << "\t" \
-                << errorstat.nsnv_error - last_snv_count << "\t" \
-                << errorstat.monomer_mut_counter["C>T"] + errorstat.monomer_mut_counter["G>A"] - last_c2t_count << "\t" \
-                << errorstat.monomer_mut_counter["C>A"] + errorstat.monomer_mut_counter["G>T"] - last_c2a_count << "\t" \
-                << errorstat.monomer_mut_counter["C>G"] + errorstat.monomer_mut_counter["G>C"] - last_c2g_count << "\t" \
-                << errorstat.doublet_counter["CG"] - last_cpg_count << "\t";
-        last_base_count =  errorstat.neval;
-        last_gc_count = errorstat.base_counter['C'] + errorstat.base_counter['G'];
-        last_snv_count = errorstat.nsnv_error;
-        last_c2t_count = errorstat.monomer_mut_counter["C>T"] + errorstat.monomer_mut_counter["G>A"];
-        last_c2a_count = errorstat.monomer_mut_counter["C>A"] + errorstat.monomer_mut_counter["G>T"];
-        last_c2g_count = errorstat.monomer_mut_counter["C>G"] + errorstat.monomer_mut_counter["G>C"];
-        last_cpg_count = errorstat.doublet_counter["CG"];
-
-        auto region_ref = ref.QueryRegion(gr.ChrName(isf.bamheader()), gr.pos1, gr.pos2-1);
-        std::map<char, int> refchar_counter;
-        for (const char c : region_ref) {
-          ++refchar_counter[toupper(c)];
-        }
-        regionlevel << refchar_counter['A'] << "\t" << refchar_counter['C'] << "\t" << refchar_counter['G'] << "\t" \
-                    << refchar_counter['T'] << "\n";
-      }
+//      if (regionlevel.is_open()) {
+//        regionlevel << gr.ChrName(isf.bamheader()) <<"\t" << gr.pos1 << "\t" << gr.pos2 << "\t" \
+//                << errorstat.neval - last_base_count << "\t" \
+//                << errorstat.base_counter['C'] + errorstat.base_counter['G'] - last_gc_count << "\t" \
+//                << errorstat.nsnv_error - last_snv_count << "\t" \
+//                << errorstat.monomer_mut_counter["C>T"] + errorstat.monomer_mut_counter["G>A"] - last_c2t_count << "\t" \
+//                << errorstat.monomer_mut_counter["C>A"] + errorstat.monomer_mut_counter["G>T"] - last_c2a_count << "\t" \
+//                << errorstat.monomer_mut_counter["C>G"] + errorstat.monomer_mut_counter["G>C"] - last_c2g_count << "\t" \
+//                << errorstat.doublet_counter["CG"] - last_cpg_count << "\t";
+//        last_base_count =  errorstat.neval;
+//        last_gc_count = errorstat.base_counter['C'] + errorstat.base_counter['G'];
+//        last_snv_count = errorstat.nsnv_error;
+//        last_c2t_count = errorstat.monomer_mut_counter["C>T"] + errorstat.monomer_mut_counter["G>A"];
+//        last_c2a_count = errorstat.monomer_mut_counter["C>A"] + errorstat.monomer_mut_counter["G>T"];
+//        last_c2g_count = errorstat.monomer_mut_counter["C>G"] + errorstat.monomer_mut_counter["G>C"];
+//        last_cpg_count = errorstat.doublet_counter["CG"];
+//
+//        auto region_ref = ref.QueryRegion(gr.ChrName(isf.bamheader()), gr.pos1, gr.pos2-1);
+//        std::map<char, int> refchar_counter;
+//        for (const char c : region_ref) {
+//          ++refchar_counter[toupper(c)];
+//        }
+//        regionlevel << refchar_counter['A'] << "\t" << refchar_counter['C'] << "\t" << refchar_counter['G'] << "\t" \
+//                    << refchar_counter['T'] << "\n";
+//      }
     } //end if
   } //end for
 
@@ -1282,10 +1277,18 @@ int codec_accuracy(int argc, char ** argv) {
   vector<string> header = {"qcutoff",
                            "n_trim",
                            "n_bases_eval",
-                           "n_A_eval",
-                           "n_C_eval",
-                           "n_G_eval",
-                           "n_T_eval",
+                           "n_A_eval_f",
+                           "n_C_eval_f",
+                           "n_G_eval_f",
+                           "n_T_eval_f",
+                           "n_A_eval_r",
+                           "n_C_eval_r",
+                           "n_G_eval_r",
+                           "n_T_eval_r",
+                           "n_A_eval_u",
+                           "n_C_eval_u",
+                           "n_G_eval_u",
+                           "n_T_eval_u",
                            "n_snv",
                            "snv_rate",
                            "n_indel",
@@ -1337,12 +1340,20 @@ int codec_accuracy(int argc, char ** argv) {
   stat << std::to_string(opt.bqual_min) + "/" + std::to_string(opt.count_read)  << '\t'
        << opt.fragend_dist_filter << '\t'
        << errorstat.neval << '\t'
-      << errorstat.base_counter['A'] << '\t'
-      << errorstat.base_counter['C'] << '\t'
-      << errorstat.base_counter['G'] << '\t'
-      << errorstat.base_counter['T'] << '\t'
-      << errorstat.nsnv_error << '\t'
-       << (float) errorstat.nsnv_error / errorstat.neval << '\t'
+      << errorstat.base_counter_f['A'] << '\t'
+      << errorstat.base_counter_f['C'] << '\t'
+      << errorstat.base_counter_f['G'] << '\t'
+      << errorstat.base_counter_f['T'] << '\t'
+      << errorstat.base_counter_r['A'] << '\t'
+      << errorstat.base_counter_r['C'] << '\t'
+      << errorstat.base_counter_r['G'] << '\t'
+      << errorstat.base_counter_r['T'] << '\t'
+      << errorstat.base_counter_u['A'] << '\t'
+      << errorstat.base_counter_u['C'] << '\t'
+      << errorstat.base_counter_u['G'] << '\t'
+      << errorstat.base_counter_u['T'] << '\t'
+      << errorstat.nsnv << '\t'
+       << (float) errorstat.nsnv / errorstat.neval << '\t'
       << errorstat.nindel_error << '\t'
       << (float) errorstat.nindel_error / errorstat.neval << '\t'
       << errorstat.indel_nbase_error << '\t'
@@ -1393,12 +1404,24 @@ int codec_accuracy(int argc, char ** argv) {
     else stat << '\t';
   }
 
-  for (const auto& it : errorstat.triplet_counter) {
-    context << it.first << "\t" << it.second << std::endl;
+  for (const auto& it : errorstat.triplet_counter_f) {
+    context << it.first << "\t" << it.second << "\t1" <<std::endl;
+  }
+  for (const auto& it : errorstat.triplet_counter_r) {
+    context << it.first << "\t" << it.second << "\t2" <<std::endl;
+  }
+  for (const auto& it : errorstat.triplet_counter_u) {
+    context << it.first << "\t" << it.second << "\t0" <<std::endl;
   }
 
-  for (const auto& it : errorstat.doublet_counter) {
-    context << it.first << "\t" << it.second << std::endl;
+  for (const auto& it : errorstat.doublet_counter_f) {
+    context << it.first << "\t" << it.second << "\t1"<< std::endl;
+  }
+  for (const auto& it : errorstat.doublet_counter_r) {
+    context << it.first << "\t" << it.second << "\t2"<< std::endl;
+  }
+  for (const auto& it : errorstat.doublet_counter_u) {
+    context << it.first << "\t" << it.second << "\t0"<< std::endl;
   }
 
   if (!opt.cycle_level_stat.empty()) {

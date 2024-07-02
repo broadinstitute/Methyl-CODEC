@@ -11,13 +11,14 @@
 #include "SeqLib/RefGenome.h"
 #include "DNAUtils.h"
 #include "BamRecordExt.h"
-#include "AlignmentConsensus.h"
+#include "AlignmentExtAndMethyl.h"
+#include "MethylAlignment.h"
 
 namespace cpputil{
 static int PAD_5 = 5;
 struct ErrorStat {
   int64_t neval = 0;
-  int64_t nsnv_error = 0;
+  int64_t nsnv = 0;
   int64_t nindel_error = 0;
   int64_t indel_nbase_error = 0;
   int64_t nsnv_masked_by_vcf1 = 0;
@@ -36,10 +37,17 @@ struct ErrorStat {
   std::vector<int64_t> R2_q30_cov;
   std::vector<int64_t> R2_q0_error;
   std::vector<int64_t> R2_q30_error;
-  std::map<char, int64_t> base_counter;
-  std::map<std::string, int64_t> monomer_mut_counter;
-  std::map<std::string, int64_t> triplet_counter;
-  std::map<std::string, int64_t> doublet_counter;
+  std::map<char, int64_t> base_counter_f;
+  std::map<char, int64_t> base_counter_r;
+  std::map<char, int64_t> base_counter_u;
+  std::map<std::string, int64_t> monomer_mut_counter_f;
+  std::map<std::string, int64_t> monomer_mut_counter_r;
+  std::map<std::string, int64_t> triplet_counter_f;
+  std::map<std::string, int64_t> triplet_counter_r;
+  std::map<std::string, int64_t> triplet_counter_u;
+  std::map<std::string, int64_t> doublet_counter_f;
+  std::map<std::string, int64_t> doublet_counter_r;
+  std::map<std::string, int64_t> doublet_counter_u;
   //qscore cutoff -> read1, read2
   std::map<int, std::pair<int64_t, int64_t>> qcut_neval;
   std::map<int, std::pair<int64_t, int64_t>> qcut_nerrors;
@@ -175,7 +183,8 @@ std::pair<int, int> CountValidBaseAndContextInMatchedBases(const SeqLib::BamReco
                                                            ErrorStat& es,
                                                            int qstart,
                                                            int qend,
-                                                           bool N_is_valid) {
+                                                           bool N_is_valid,
+                                                           int pstrand_o) {
   //Valid bases are not N and baseq >= qcutoff
   if (qend <= qstart) return std::make_pair(0, 0);
   if (qend > b.AlignmentEndPosition()) {
@@ -216,11 +225,31 @@ std::pair<int, int> CountValidBaseAndContextInMatchedBases(const SeqLib::BamReco
         }
         if (not bq_blacklist.empty() and bq_blacklist.find(refpos + ww) != bq_blacklist.end()) continue;
         ++res;
-        es.base_counter[toupper(ref[refpos + ww - rstart])]++;
+        switch (pstrand_o) {
+          case 0:
+            es.base_counter_u[toupper(ref[refpos + ww - rstart])]++;
+            break;
+          case 1:
+            es.base_counter_f[toupper(ref[refpos + ww - rstart])]++;
+            break;
+          case 2:
+            es.base_counter_r[toupper(ref[refpos + ww - rstart])]++;
+            break;
+        }
         if (refpos + ww - rstart -1 >= 0) {
           auto tri = ref.substr(refpos + ww - rstart - 1, 3);
           std::transform(tri.begin(), tri.end(), tri.begin(), ::toupper);
-          ++es.triplet_counter[tri];
+          switch (pstrand_o) {
+            case 0:
+              ++es.triplet_counter_u[tri];
+              break;
+            case 1:
+              ++es.triplet_counter_f[tri];
+              break;
+            case 2:
+              ++es.triplet_counter_r[tri];
+              break;
+          }
         }
 
         if (bq[cur + 1] >= minbq &&
@@ -228,7 +257,17 @@ std::pair<int, int> CountValidBaseAndContextInMatchedBases(const SeqLib::BamReco
             bq_blacklist.find(refpos + ww + 1) == bq_blacklist.end()) {
           auto di = ref.substr(refpos + ww - rstart, 2);
           std::transform(di.begin(), di.end(), di.begin(), ::toupper);
-          ++es.doublet_counter[di];
+          switch (pstrand_o) {
+            case 0:
+              ++es.doublet_counter_u[di];
+              break;
+            case 1:
+              ++es.doublet_counter_f[di];
+              break;
+            case 2:
+              ++es.doublet_counter_r[di];
+              break;
+          }
         }
       }
       readpos += bam_cigar_oplen(c[i]);
@@ -284,6 +323,7 @@ static std::pair<int,int> CountDenom(const cpputil::Segments& seg,
   // blacklist represents a set of SNV positions that will not be counted in the error rate calculation
   int r1 = 0, r2 = 0, r1q0 = 0, r2q0 = 0;
   std::set<int> baseqblack;
+  int pstrand_o = GetProtectedStrandOrientation(seg);
   if (seg.size() == 1) {
     std::pair<int,int> range;
     const auto& br = seg.front();
@@ -295,13 +335,13 @@ static std::pair<int,int> CountDenom(const cpputil::Segments& seg,
     }
     if (not br.PairedFlag() or br.FirstFlag()) {
       if (count_context)
-        std::tie(r1,r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(br, blacklist, chrname, ref, minbq, baseqblack, es, range.first, range.second, N_is_valid);
+        std::tie(r1,r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(br, blacklist, chrname, ref, minbq, baseqblack, es, range.first, range.second, N_is_valid, pstrand_o);
       else
         std::tie(r1, r1q0) = cpputil::CountValidBaseInMatchedBases(br, blacklist, minbq, baseqblack,range.first, range.second, N_is_valid);
     }
     else {
       if (count_context)
-        std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(br, blacklist, chrname, ref, minbq, baseqblack, es, range.first, range.second, N_is_valid);
+        std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(br, blacklist, chrname, ref, minbq, baseqblack, es, range.first, range.second, N_is_valid, pstrand_o);
       else
         std::tie(r2, r2q0) = cpputil::CountValidBaseInMatchedBases(br, blacklist, minbq, baseqblack, range.first, range.second, N_is_valid);
     }
@@ -334,14 +374,14 @@ static std::pair<int,int> CountDenom(const cpputil::Segments& seg,
       size_t r1_nmask;
       if (count_context) {
         if (count_overhang == 2) {
-          std::tie(r1, r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack, es, range_front.first, range_front.second, N_is_valid);
+          std::tie(r1, r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack, es, range_front.first, range_front.second, N_is_valid, pstrand_o);
         } else if (count_overhang == 1){
           if (seg.front().ReverseFlag()) {
-            std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack, es, overlap_back.first, range_back.first, N_is_valid);
+            std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack, es, overlap_back.first, range_back.first, N_is_valid, pstrand_o);
             baseqblack.clear();
             cpputil::CountValidBaseInMatchedBases(seg.back(), blacklist, minbq, baseqblack, range_back.first, range_back.second, N_is_valid); // for blacklist only
           } else {
-            std::tie(r1, r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack, es, overlap_front.first, range_front.first, N_is_valid);
+            std::tie(r1, r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack, es, overlap_front.first, range_front.first, N_is_valid, pstrand_o);
             baseqblack.clear();
             cpputil::CountValidBaseInMatchedBases(seg.front(), blacklist, minbq, baseqblack, range_front.first, range_front.second, N_is_valid); // for blacklist only
           }
@@ -352,20 +392,20 @@ static std::pair<int,int> CountDenom(const cpputil::Segments& seg,
         if (count_overhang == 2) baseqblack.clear();// when count_overhang is true, treat R1 and R2 independently
         if (count_overhang == 1) {
           if (seg.front().ReverseFlag()) {
-            std::tie(r1, r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack, es, range_front.first, range_front.second, N_is_valid);
+            std::tie(r1, r1q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack, es, range_front.first, range_front.second, N_is_valid, pstrand_o);
             std::set<int> baseqblack2;
-            auto r1_res = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack2, es, range_front.second, overlap_front.second, N_is_valid);
+            auto r1_res = cpputil::CountValidBaseAndContextInMatchedBases(seg.front(), blacklist, chrname, ref, minbq, baseqblack2, es, range_front.second, overlap_front.second, N_is_valid, pstrand_o);
             r1 += r1_res.first;
             r1q0 += r1_res.second;
           } else {
-            std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack, es, range_back.first, range_back.second, N_is_valid);
+            std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack, es, range_back.first, range_back.second, N_is_valid, pstrand_o);
             std::set<int> baseqblack2;
-            auto r2_res = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack2, es, range_back.second, overlap_back.second, N_is_valid);
+            auto r2_res = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack2, es, range_back.second, overlap_back.second, N_is_valid, pstrand_o);
             r2 += r2_res.first;
             r2q0 += r2_res.second;
           }
         } else {
-          std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack, es, range_back.first, range_back.second, N_is_valid);
+          std::tie(r2, r2q0) = cpputil::CountValidBaseAndContextInMatchedBases(seg.back(), blacklist, chrname, ref, minbq, baseqblack, es, range_back.first, range_back.second, N_is_valid, pstrand_o);
         }
       }
       else { // not count context

@@ -57,8 +57,9 @@ if (NOT TARGET spoa)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/bbcpputil/third_party/spoa EXCLUDE_FROM_ALL)
 endif ()
 
-set(deps bbcpputil/cpp/AlignmentConsensus.cpp bbcpputil/cpp/BamRecordExt.cpp)
-set(subcommand demux.cpp trimadapter.cpp ms-align.cpp accuracy.cpp include/seqan_init_score.h)
+set(deps bbcpputil/cpp/AlignmentExtAndMethyl.cpp bbcpputil/cpp/BamRecordExt.cpp)
+set(subcommand demux.cpp trimadapter.cpp ms-align.cpp accuracy.cpp include/seqan_init_score.h
+        bbcpputil/include/MethylAlignment.h)
 
 if (CMAKE_BUILD_TYPE MATCHES Debug)
     message(" ")

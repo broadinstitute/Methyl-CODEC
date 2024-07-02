@@ -103,7 +103,7 @@ void showScoringMatrix(Score<TScoreValue, ScoreMatrix<TSequenceValue, TSpec> > c
   }
 }
 
-std::tuple<int,int,int,int> print_AG_CT_mismatch(const TAlign& align) {
+inline std::tuple<int,int,int,int> print_AG_CT_mismatch(const TAlign& align) {
   int n_C_T_mm = 0;
   int n_A_G_mm = 0;
   int n_other_mm = 0;

@@ -9,12 +9,17 @@
 #include <vector>
 #include <map>
 #include <htslib/sam.h>
+#include "seqan/align.h"
+#include "seqan_init_score.h"
 #include "BamRecordExt.h"
 #include "Alignment.h"
 #include "SeqLib/BWAWrapper.h"
 #include "DNAUtils.h"
 
 namespace cpputil {
+
+typedef int TValue;
+typedef Score<TValue, ScoreMatrix<Dna5, Default> > TScoringScheme;
 
 inline void find_insert_(const SeqLib::Cigar &cigar, int left_cursor, std::map<int, int> &ins_len) {
   for (auto it = cigar.begin(); it != cigar.end(); ++it) {
@@ -28,15 +33,35 @@ inline void find_insert_(const SeqLib::Cigar &cigar, int left_cursor, std::map<i
   }
 }
 
-inline bool is_bisulfite_converted(const std::string& seq, int MIN_READL) {
-  int numC = cpputil::countChar(seq, 'C');
+inline bool is_bisulfite_converted(const std::string& seq, int MIN_READL, float MAX_G_RATE = 0.05) {
   int numG = cpputil::countChar(seq, 'G');
-  if (seq.size() > MIN_READL and ((float) numC / seq.size() < 0.05 or (float) numG / seq.size() < 0.05 )) {
+  if (seq.size() > MIN_READL and ((float)  numG / seq.size() < MAX_G_RATE )) {
     return true;
   } else {
     return false;
   }
 }
+
+inline int IsCorrectMSPairedReads1(const Segments& segs) {
+  /*
+   * return 0: for incorrect MS reads
+   * 1: correct MS reads with first read is the protected strand
+   * 2: correct MS reads with second read is the protected strand
+   */
+  if (segs.size() != 2) {
+    throw std::runtime_error("IsCorrectMSPairedReads1: segs.size() != 2");
+  }
+  bool a = is_bisulfite_converted(segs[0].Sequence(), 15);
+  bool b = is_bisulfite_converted(segs[1].Sequence(), 15);
+  if (a ^ b) {
+    if (not a) return 1;
+    else return 2;
+  } else {
+    return 0;
+  }
+}
+
+int IsCorrectMSPairedReads2(const Segments& segs, const TScoringScheme& ss, const int min_ol_len);
 
 std::string GetConsensusTemplate(const Segments& segs, int32_t& ref_most_left);
 

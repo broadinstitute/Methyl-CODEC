@@ -2,7 +2,7 @@
 // Created by Ruolin Liu on 3/19/20.
 //
 
-#include "AlignmentConsensus.h"
+#include "AlignmentExtAndMethyl.h"
 #include "DNAUtils.h"
 
 namespace cpputil {
@@ -463,6 +463,38 @@ std::pair<std::string, std::string> MergeSegs(const Segments &segs, const std::v
     qual.erase(std::remove(qual.begin(),qual.end(), NUL ), qual.end());
   }
   return std::make_pair(consns_seq, consns_qual);
+}
+
+int IsCorrectMSPairedReads2(const Segments& seg, const TScoringScheme& ss, const int min_score) {
+  /*
+   * return 0: for incorrect MS reads
+   * 1: correct MS reads with first read is the protected strand
+   * 2: correct MS reads with second read is the protected strand
+   */
+  int ret = IsCorrectMSPairedReads1(seg);
+  if (ret != 0) {
+    return ret;
+  }
+  std::string read2 = seg[1].Sequence();
+  cpputil::reverse_complement(read2);
+  TSequence ref = seg[0].Sequence();
+  TSequence query = read2;
+  TAlign align1;
+  seqan::resize(rows(align1), 2);
+  seqan::assignSource(row(align1, 0), ref);
+  seqan::assignSource(row(align1, 1), query);
+  int s1 = seqan::globalAlignment(align1, ss,  seqan::AlignConfig<true, false, true, false>(), seqan::AffineGaps());
+  if (s1 > min_score) {
+    int a,b,c,d;
+    std::tie(a,b,c,d) = print_AG_CT_mismatch(align1);
+    return a>b ? 1 : 2;
+    //float pi = 1.0 - (float) c/ (a+b+c+d);
+    //std::cout << "l1: " <<seqan::length(ref) << " l2: " <<seqan::length(query) <<  " pi: " << pi <<" C/T: " << a <<" A/G " << b << std::endl;
+    //std::cout << align1;
+
+  } else {
+    return 0;
+  }
 }
 
 SeqLib::BamRecord SingleEndBWA(const SeqLib::BWAWrapper& bwa, const SeqLib::BamRecord& ubam, const int MIN_READL) {

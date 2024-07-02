@@ -9,13 +9,13 @@
 #include "spoa/spoa.hpp"
 
 #include "BamIO.h"
-#include <seqan/align.h>
+#include "seqan/align.h"
 #include "seqan_init_score.h"
 #include "SeqLib/BWAWrapper.h"
 #include "BamRecordExt.h"
 #include "FastxRecord.h"
 #include "FastxIO.h"
-#include "AlignmentConsensus.h"
+#include "AlignmentExtAndMethyl.h"
 extern "C" {
 #include "bwa/ksw.h"
 #ifdef USE_MALLOC_WRAPPERS
@@ -64,7 +64,7 @@ struct CssOptions {
   bool call_overhang = false;
   string reference = "";
   string read_group_header = "";
-  bool strand_specific_fastq = false;
+//  bool strand_specific_fastq = false;
   int minbq = 0;
   int min_eof_dist = 0;
   string outprefix = "";
@@ -90,14 +90,14 @@ static struct option  consensus_long_options[] = {
     {"outprefix",                required_argument ,     0,        'o'},
     {"pair_min_overlap",         required_argument,      0,        'p'},
     {"call_overhang",            no_argument,            0,        't'},
-    {"strand_specific_fastq",   no_argument,            0,        's'},
+//    {"strand_specific_fastq",   no_argument,            0,        's'},
     {"intermol_bam",            required_argument,            0,        'i'},
     {"max_read",                 required_argument,      0,        'M'},
     {"read_group_header",        required_argument,      0,        'R'},
     {0,0,0,0}
 };
 
-const char* consensus_short_options = "b:m:M:o:lCp:q:d:ti:r:sR:";
+const char* consensus_short_options = "b:m:M:o:lCp:q:d:ti:r:R:";
 
 void consensus_print_help()
 {
@@ -114,7 +114,7 @@ void consensus_print_help()
   //std::cerr<< "-l/--load_supplementary,               Include supplementary alignment [false].\n";
 //  std::cerr<< "-t/--call_overhang,                    Call metC in the overhang regions [false].\n";
   std::cerr<< "-C/--clip3,                            trim the 3'end soft clipping [false].\n";
-  std::cerr<< "-s/--strand_specific_fastq,            output fastq for each strand [false].\n";
+//  std::cerr<< "-s/--strand_specific_fastq,            output fastq for each strand [false].\n";
 //  std::cerr<< "-s/--output_singleend,                 The R1R2 consensus will be output in a single end format [false].\n";
   std::cerr<< "-p/--pair_min_overlap,                 When using selector, the minimum overlap between the two ends of the pair [1].\n";
 //  std::cerr<< "-d/--dirtmp,                           Temporary dir for sorted bam [/tmp]\n";
@@ -164,9 +164,9 @@ int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
       case 'C':
         opt.clip3 = true;
         break;
-      case 's':
-        opt.strand_specific_fastq = true;
-        break;
+//      case 's':
+//        opt.strand_specific_fastq = true;
+//        break;
       case 'M':
         opt.max_read = atoi(optarg);
         break;
@@ -203,11 +203,9 @@ int codec_ms_align(int argc, char ** argv) {
     return 1;
   }
 
-  typedef int TValue;
-  typedef Score<TValue, ScoreMatrix<Dna5, Default> > TScoringScheme;
   int const gapOpenScore = -8;
   int const gapExtendScore = -8;
-  TScoringScheme scoringScheme(gapExtendScore, gapOpenScore);
+  cpputil::TScoringScheme scoringScheme(gapExtendScore, gapOpenScore);
 
   //std::cout << "User defined matrix (also Dna5 scoring matrix)..." << std::endl;
   setDefaultScoreMatrix(scoringScheme, UserDefinedMatrix());
@@ -218,24 +216,25 @@ int codec_ms_align(int argc, char ** argv) {
 
   int8_t other_mm = -4;
   int8_t BS_mm = 0;
+  int8_t N_mm = -1;
   int8_t mat[25] = {
-    1, other_mm, BS_mm, other_mm, other_mm,
-            other_mm, 1, other_mm, BS_mm, other_mm,
-            other_mm, other_mm, 1, other_mm, other_mm,
-            other_mm, other_mm, other_mm, 1, other_mm,
-            other_mm, other_mm, other_mm, other_mm, other_mm
+    1, other_mm, BS_mm, other_mm, N_mm,
+            other_mm, 1, other_mm, BS_mm, N_mm,
+            other_mm, other_mm, 1, other_mm, N_mm,
+            other_mm, other_mm, other_mm, 1, N_mm,
+            N_mm, N_mm, N_mm, N_mm, N_mm
   };
 
   SeqLib::BamWriter bam_writer;
-  SeqLib::BamWriter single_ext_strand_bam_writer;
   cpputil::FastqWriter single_orig_strand_fq_writer;
+  cpputil::FastqWriter single_prot_strand_fq_writer;
 //  SeqLib::BamWriter bam_e_writer;
 //  SeqLib::BamWriter bam_c_writer;
-  cpputil::FastqWriter fq_e_writer, fq_c_writer;
-  if (opt.strand_specific_fastq) {
-    fq_e_writer.open(opt.outprefix + ".protected_reads.fastq.gz");
-    fq_c_writer.open(opt.outprefix + ".converted_reads.fastq.gz");
-  }
+//  cpputil::FastqWriter fq_e_writer, fq_c_writer;
+//  if (opt.strand_specific_fastq) {
+//    fq_e_writer.open(opt.outprefix + ".protected_reads.fastq.gz");
+//    fq_c_writer.open(opt.outprefix + ".converted_reads.fastq.gz");
+//  }
   string hdr_line;
   for (unsigned i = 0; i < bwa.GetIndex()->bns->n_seqs; ++i) {
     char hdr_line1[80];
@@ -267,10 +266,8 @@ int codec_ms_align(int argc, char ** argv) {
   bam_writer.WriteHeader();
 
   if (not opt.itermol_out.empty()) {
-    single_orig_strand_fq_writer.open(opt.itermol_out + ".original_strand.fastq.gz");
-    single_ext_strand_bam_writer.Open(opt.itermol_out + ".protected_strand.aligned.bam");
-    single_ext_strand_bam_writer.SetHeader(bh);
-    single_ext_strand_bam_writer.WriteHeader();
+    single_orig_strand_fq_writer.open(opt.itermol_out + ".converted_strand.fastq.gz");
+    single_prot_strand_fq_writer.open(opt.itermol_out + ".protected_strand.fastq.gz");
   }
 
   SeqLib::RefGenome refseq;
@@ -290,32 +287,17 @@ int codec_ms_align(int argc, char ** argv) {
         for (auto seg : frag) {
           assert (seg.size() == 2);
           ++libstat.total_pairs;
-          std::string read2 = seg[1].Sequence();
-          cpputil::reverse_complement(read2);
-//          int ol = cpputil::GetNumOverlapBasesPEAlignment(seg);
-//          if (ol < opt.pair_min_overlap) continue;
-          TSequence ref = seg[0].Sequence();
-          TSequence query = read2;
-          std::string converted_strand;
-          std::string extended_strand;
-          std:string rx1, rx2;
+          std::string rx1, rx2;
           if (not seg[0].GetZTag("RX", rx1)) throw std::runtime_error("No RX tag found\n");
           if (not seg[1].GetZTag("RX", rx2)) throw std::runtime_error("No RX tag found\n");
-          TAlign align1;
-          seqan::resize(rows(align1), 2);
-          seqan::assignSource(row(align1, 0), ref);
-          seqan::assignSource(row(align1, 1), query);
-          int s1 = seqan::globalAlignment(align1, scoringScheme,  seqan::AlignConfig<true, false, true, false>(), seqan::AffineGaps());
-          if (s1 > opt.min_overlap) {
-            int a,b,c,d;
-            std::tie(a,b,c,d) = print_AG_CT_mismatch(align1);
-            float pi = 1.0 - (float) c/ (a+b+c+d);
-            //std::cout << "l1: " <<seqan::length(ref) << " l2: " <<seqan::length(query) <<  " pi: " << pi <<" C/T: " << a <<" A/G " << b << std::endl;
-            //std::cout << align1;
+          int is_correct_ms =cpputil::IsCorrectMSPairedReads2(seg, scoringScheme, opt.pair_min_overlap);
+          if (is_correct_ms > 0) {
+            std::string converted_strand;
+            std::string extended_strand;
             bool first_read_extended;
             uint8_t *ext_qual = 0;
             uint8_t *cvt_qual = 0;
-            if (a > b ) {
+            if (is_correct_ms == 1) {
               //writer.WriteRecord(seg[0]);
               first_read_extended = true;
               extended_strand = seg[0].Sequence();
@@ -354,8 +336,8 @@ int codec_ms_align(int argc, char ** argv) {
 
 //          map converted strand using BWA-SW at position where extended strand was mapped
             int64_t rb=0, re=0;
-            rb = ar_et.a[f_pidx].rb - 200;
-            re = ar_et.a[f_pidx].re + 200;
+            rb = ar_et.a[f_pidx].rb - 500;
+            re = ar_et.a[f_pidx].re + 500;
             int64_t l_pac = bwa.GetIndex()->bns->l_pac;
             if (re > l_pac <<1) re = l_pac<<1;
             uint8_t *rseq = 0;
@@ -378,7 +360,7 @@ int codec_ms_align(int argc, char ** argv) {
             free(rseq);
             free(seq);
 //            std::cout <<"score: "<< ksw_aln.score << std::endl;
-            if (ksw_aln.score > opt.min_overlap) {
+            if (ksw_aln.score > opt.min_overlap) { // if protected strand guided alignment is successful
               cpputil::reverse_complement(converted_strand);
               cs_b.rid = rid;
               cs_b.is_alt = ar_et.a[f_pidx].is_alt;
@@ -472,30 +454,30 @@ int codec_ms_align(int argc, char ** argv) {
 //              metbam_writer.WriteRecord(bam_cs);
 
               //output fastq for each strands
-              if (opt.strand_specific_fastq) {
-                cpputil::FastxRecord fq_et(bam_et);
-                fq_e_writer.Write(fq_et);
-                cpputil::FastxRecord fq_cs(bam_cs);
-                fq_c_writer.Write(fq_cs);
-              }
+//              if (opt.strand_specific_fastq) {
+//                cpputil::FastxRecord fq_et(bam_et);
+//                fq_e_writer.Write(fq_et);
+//                cpputil::FastxRecord fq_cs(bam_cs);
+//                fq_c_writer.Write(fq_cs);
+//              }
               ++libstat.correct_paris;
               free(cs_aln.cigar);
             } else { // converted strand failed to align to the same place where extended strand got aligned
               if (not opt.itermol_out.empty()) {
                 std::string qname = seg[0].Qname();
                 if (first_read_extended) {
-                  single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa,seg[0], opt.MIN_READL));
-                  single_orig_strand_fq_writer.Write(qname + "/2", converted_strand, seg[1].Qualities());
+                  single_prot_strand_fq_writer.Write(qname +"/1", seg[0].Sequence(), seg[0].Qualities());
+                  single_orig_strand_fq_writer.Write(qname + "/2", seg[1].Sequence(), seg[1].Qualities());
                 } else {
-                  single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa,seg[1], opt.MIN_READL));
-                  single_orig_strand_fq_writer.Write(qname + "/1", converted_strand, seg[0].Qualities());
+                  single_prot_strand_fq_writer.Write(qname + "/2", seg[1].Sequence(), seg[1].Qualities());
+                  single_orig_strand_fq_writer.Write(qname + "/1", seg[0].Sequence(), seg[0].Qualities());
                 }
               }
               ++libstat.intermol_pairs;
             }
             free(ar_et.a);
             free(et_aln.cigar);
-          } else { // no overlap using seqan alignment
+          } else { // not correct MS reads
             std::string r1 = seg[0].Sequence();
             std::string r2 = seg[1].Sequence();
             if (r1.length() > opt.MIN_READL and r2.length() > opt.MIN_READL) {
@@ -507,15 +489,17 @@ int codec_ms_align(int argc, char ** argv) {
               std::string name = seg[0].Qname();
 
               if (cpputil::is_bisulfite_converted(r1, opt.MIN_READL)) {
+                //Need to replace with bamwriter so we can keep the RX tag
                 single_orig_strand_fq_writer.Write(name + "/1", r1, q1);
               } else {
-                single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa, seg[0], opt.MIN_READL));
+                single_prot_strand_fq_writer.Write(name +"/1", r1, q1);
               }
 
               if (cpputil::is_bisulfite_converted(r2, opt.MIN_READL)) {
+                //Need to replace with bamwriter so we can keep the RX tag
                 single_orig_strand_fq_writer.Write(name + "/2", r2, q2);
               } else {
-                single_ext_strand_bam_writer.WriteRecord(cpputil::SingleEndBWA(bwa, seg[1], opt.MIN_READL));
+                single_prot_strand_fq_writer.Write(name + "/2", r2, q2);
               }
             }
           }
