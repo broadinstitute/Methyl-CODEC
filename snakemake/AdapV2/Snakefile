@@ -499,7 +499,7 @@ rule BismarkExtractMethylation:
         ncores = config['ncores']
     shell:
         """
-        bismark_methylation_extractor -s --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
+        bismark_methylation_extractor -s --ignore 12 --ignore_3prime 2 --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
             --bedGraph --gzip {input} -o bismark --zero_based --comprehensive --parallel {resources.ncores}
         """
 rule RemoveDuplciateInSingleConvertedStrand:
@@ -527,14 +527,14 @@ rule BismarkExtractMethylationSingleStrand:
         ncores = config['ncores']
     shell:
         """
-        bismark_methylation_extractor -s --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
+        bismark_methylation_extractor -s --ignore 12 --ignore_3prime 2 --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
             --bedGraph --gzip {input} -o bismark --zero_based --comprehensive --parallel {resources.ncores}
         """
 
 rule BismarkMethylationBedGraphMerge:
     input:
         correct="bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.cov",
-        byproduct="bismark/{index}.converted_strand_only.duplicate_removed.bedGraph.gz.bismark.zero.cov"
+        #byproduct="bismark/{index}.converted_strand_only.duplicate_removed.bedGraph.gz.bismark.zero.cov"
     output:
         "bismark/{index}.converted_strand.duplicate_removed.nodecoy.strand_merge.cov"
     resources:
@@ -542,7 +542,7 @@ rule BismarkMethylationBedGraphMerge:
         runtime = 24,
     shell:
         """
-        cat {input.correct} {input.byproduct} | sort -V -k1,1 -k2,2 | awk 'length($1) <= 5 && $1 != "chrM" {{print $0}}' \
+        cat {input.correct} | sort -V -k1,1 -k2,2 | awk 'length($1) <= 5 && $1 != "chrM" {{print $0}}' \
         | /xchip/bloodbiopsy/ruolin/apps/bedtools2/bedtools merge -c 5,6 -o sum,sum > {output}
         """
 

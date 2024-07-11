@@ -2,8 +2,6 @@
 import argparse
 import sys
 import pandas as pd
-import os
-from collections import defaultdict
 
 def get_arguments():
 
