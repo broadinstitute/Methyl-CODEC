@@ -11,7 +11,7 @@ logger = logging.getLogger("{}".format(__file__))
 
 def get_arguments():
 
-    parser = argparse.ArgumentParser(prog="foo", formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(prog="filter and separate strands", formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("bam", type=str, help="input bam file")
     parser.add_argument("methyl", type=str, help="methyl reads bam output file")
     parser.add_argument("regular", type=str, help="regular reads bam output file")
