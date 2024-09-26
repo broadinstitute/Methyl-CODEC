@@ -173,53 +173,11 @@ struct Variant {
   }
 
   bool operator==(const Variant& other) const {
-    if (other.contig == this->contig && other.contig_start == this->contig_start)  {
-      if (other.alt_seq == this->alt_seq) {
-        return true;
-      } else if (this->bs_converted or other.bs_converted) {
-        if (this->bs_converted) {
-          if (this->rev_strand) {
-            if (this->alt_seq.size () == other.alt_seq.size() and
-                this->alt_seq == std::string("T", this->alt_seq.size()) and
-                other.alt_seq == std::string("C", other.alt_seq.size())) {
-              return true;
-            } else {
-              return false;
-            }
-          } else { // forward strand
-            if (this->alt_seq.size () == other.alt_seq.size() and
-                this->alt_seq == std::string("A", this->alt_seq.size()) and
-                other.alt_seq == std::string("G", other.alt_seq.size())) {
-              return true;
-            } else {
-              return false;
-            }
-          }
-        } else {
-          if (other.rev_strand) {
-            if (this->alt_seq.size () == other.alt_seq.size() and
-                other.alt_seq == std::string("T", other.alt_seq.size()) and
-                this->alt_seq == std::string("C", this->alt_seq.size())) {
-              return true;
-            } else {
-              return false;
-            }
-          } else { // forward strand
-            if (this->alt_seq.size () == other.alt_seq.size() and
-                other.alt_seq == std::string("A", other.alt_seq.size()) and
-                this->alt_seq == std::string("G", this->alt_seq.size())) {
-              return true;
-            } else {
-              return false;
-            }
-          }
-        }
-      } else {
-        return false;
-      }
-    } else {
-      return false;
-    }
+    if (other.contig != this->contig) return false;
+    if (other.contig_start != this->contig_start) return false;
+    if (other.alt_seq != this->alt_seq) return false;
+    if (other.contig_seq != this->contig_seq) return false;
+    return true;
   }
 
   bool operator!=(const Variant& other) const {
@@ -291,41 +249,55 @@ std::vector<Variant> var_atomize(const Variant& var) {
   return res;
 }
 
-std::pair<std::string, std::string> QualContext(const Variant& var, const std::vector<SeqLib::BamRecord>& bams, int w, int minbq = 30) {
+std::tuple<std::string, std::string, std::string, std::string, std::string> QualContext(const Variant& var, const std::vector<SeqLib::BamRecord>& bams, const SeqLib::RefGenome& ref,int w) {
   //return 3'(downstream) qualities in reference direction
   //return 5'(upstream) qualities in reverse direction
-  std::string left_res,right_res;
+  std::string left_qual,right_qual;
+  std::string left_seq, right_seq;
+  auto refseq = ref.QueryRegion(var.contig, var.contig_start - 1, var.contig_start + 1);
   if (bams.size() == 1) {
     auto qual = bams[0].Qualities();
+    auto seq = bams[0].Sequence();
     int s = var.r1_start - w;
     if (var.r1_start - w < 0) {
-      left_res = qual.substr(0, var.r1_start);
+      left_qual = qual.substr(0, var.r1_start);
+      left_seq = seq.substr(0, var.r1_start);
     } else {
-      left_res = qual.substr(var.r1_start - w, w);
+      left_qual = qual.substr(var.r1_start - w, w);
+      left_seq = seq.substr(var.r1_start - w, w);
     }
     if (var.r1_start + w >= (int) qual.size() && var.r1_start + 1 < (int) qual.size()) {
-      right_res = qual.substr(var.r1_start + 1);
+      right_qual = qual.substr(var.r1_start + 1);
+      right_seq = seq.substr(var.r1_start + 1);
     } else {
-      right_res = qual.substr(var.r1_start + 1, w);
+      right_qual = qual.substr(var.r1_start + 1, w);
+      right_seq = seq.substr(var.r1_start + 1, w);
     }
-    std::reverse(left_res.begin(), left_res.end());
-    return std::make_pair(right_res, left_res);
+    std::reverse(left_qual.begin(), left_qual.end());
+    std::reverse(left_seq.begin(), left_seq.end());
+    return std::make_tuple(refseq, left_seq, right_seq, right_qual, left_qual);
 
   } else {
     if(not bams[0].FirstFlag() || bams[1].FirstFlag()){
       throw std::runtime_error("Wrong read orders\n");
     }
-    auto qual1 = bams[0].Qualities(0);
-    auto qual2 = bams[1].Qualities(0);
+    auto qual1 = bams[0].Qualities(33);
+    auto qual2 = bams[1].Qualities(33);
+    auto seq1 = bams[0].Sequence();
+    auto seq2 = bams[1].Sequence();
     for (int ii = 1; ii <= w; ++ii) {
       if(var.r1_start - ii >= 0 && var.r2_start - ii >=0) {
-        left_res += std::min(qual1[var.r1_start - ii], (char)minbq) + std::min(qual2[var.r2_start - ii], (char)minbq) + 33;
+        left_qual += qual1[var.r1_start - ii] + qual2[var.r2_start - ii];
+        left_seq += seq1[var.r1_start - ii] == seq2[var.r2_start - ii] ? seq1[var.r1_start - ii] : 'N';
       }
       if(var.r1_start + ii < (int) qual1.size() && var.r2_start + ii < (int) qual2.size()) {
-        right_res += std::min(qual1[var.r1_start + ii], (char)minbq) + std::min(qual2[var.r2_start + ii], (char)minbq) + 33;
+        right_qual += qual1[var.r1_start + ii] + qual2[var.r2_start + ii];
+        right_seq += seq1[var.r1_start + ii] == seq2[var.r2_start + ii] ? seq1[var.r1_start + ii] : 'N';
       }
     }
-    return std::make_pair(right_res, left_res);
+    std::reverse(left_seq.begin(), left_seq.end());
+    std::reverse(left_qual.begin(), left_qual.end());
+    return std::make_tuple(refseq, left_seq, right_seq, right_qual, left_qual);
   }
 }
 
@@ -358,15 +330,6 @@ Variant squash_vars(const std::vector<Variant>& vars) {
     ret.r1_start = vars[1].r1_start;
   }
 
-  //for C to T mismatch caused by bisulfite
-  if (vars[0].alt_seq != vars[1].alt_seq) {
-    if (vars[0].alt_seq[0] == 'C' or vars[0].alt_seq[0] == 'T'){
-      ret.alt_seq = std::string("C", vars[0].alt_seq.size());
-    } else {
-      ret.alt_seq = std::string("G", vars[0].alt_seq.size());
-    }
-    //std::cerr<<"found meth base " << ret << std::endl;
-  }
   return ret;
 }
 

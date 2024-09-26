@@ -63,19 +63,25 @@ inline int IsCorrectMSPairedReads1(const Segments& segs) {
 
 int IsCorrectMSPairedReads2(const Segments& segs, const TScoringScheme& ss, const int min_ol_len);
 
+int GetConvertStrandIndex(const Segments& seg);
+
 std::string GetConsensusTemplate(const Segments& segs, int32_t& ref_most_left);
 
 std::pair<std::string, std::string>
     GetGappedSeqAndQual(const SeqLib::BamRecord &r, const int start, const std::string& consensus_template);
 
+std::string GetGappedSeqForRef(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& header, const SeqLib::BamRecord &r, const int start, const std::string& consensus_template, bool include_soft_clip);
+
 std::string MergePairSeq(const Segments &segs, const std::vector<std::string>& seqs, bool trim_overhang);
 std::string MergePair(const Segments &segs, bool trim_overhang);
 std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(const Segments &segs);
 
-std::string CallingMetC(const SeqLib::RefGenome& ref,const SeqLib::BamHeader& bamheader, const Segments &segs, bool trim_overhang, int qcutoff, int eof);
+std::string CallMetC(const SeqLib::RefGenome& ref,const SeqLib::BamHeader& bamheader, const Segments &segs, bool trim_overhang, int qcutoff, int eof);
 
 SeqLib::BamRecord SingleEndBWA(const SeqLib::BWAWrapper& bwa, const SeqLib::BamRecord& ubam, const int MIN_READL = 15);
 Segments PairEndBWA(const SeqLib::BWAWrapper& bwa, const Segments& segs, const int MIN_READL = 15);
+
+void ResolveCT_GA_bases_MSPairedReads(const SeqLib::RefGenome& ref, const SeqLib::BamHeader&, std::vector<Segments>& frag);
 //std::pair<std::string, std::string> PairSeqConsensus(const Segments &seg, bool trim_overhang, int qcutoff);
 
 }

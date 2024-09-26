@@ -11,7 +11,7 @@
 namespace cpputil {
 
 inline bool IsdNTP(char x) {
-  if (x == 'A' or x == 'C' or x=='G' or x == 'T') return true;
+  if (x == 'A' or x == 'C' or x=='G' or x == 'T' or x=='N') return true;
   else return false;
 }
 inline bool IsH(char x) {

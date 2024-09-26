@@ -1,9 +1,10 @@
 //
 // Created by Ruolin Liu on 3/3/20.
 //
-//
-// Created by Ruolin Liu on 2/18/20.
-//
+// Changes for MSCODEC compared to standard CODECsuite:
+// 1. in the fragment level filtering step, the mismatch C>T, G>A will not be counted as a mismatch.
+// 2. allow some degree of softclipping at the 5' end of the read (e.g. 3bp). This is controled as a command line option.
+// 3. Number of mismatch against reference filter is computed only for protected strand. Due to the NM and MD tag does not account for converted bases
 
 #include <iostream>
 #include <fstream>
@@ -643,7 +644,7 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
 
       int germ_support = 0, germ_depth = std::numeric_limits<int>::max();
       int site_depth = 0;
-      std::pair<string, string> qtxt = {"NA", "NA"};
+      std::tuple<string, string, string, string, string> qtxt = std::make_tuple("NA", "NA", "NA", "NA", "NA");
       if (var.isIndel() ) {// INDEL
         if (var.IndelLen() < opt.min_indel_len) {
           continue;
@@ -820,9 +821,9 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
         ++errorstat.nindel_error;
         errorstat.indel_nbase_error += abs((int) var.contig_seq.length() - (int) var.alt_seq.length());
         if (opt.count_read == 0 ) {
-          qtxt = cpputil::QualContext(var, seg, 3);
+          qtxt = cpputil::QualContext(var, seg, ref, 3);
         }
-        ferr << var << '\t' << aux_prefix << '\t' << qtxt.first << '\t' <<qtxt.second << "\t" << site_depth << "\t" << germ_depth << "\t-1" <<'\n';
+        ferr << var << '\t' << aux_prefix << '\t' << std::get<0>(qtxt) << "\t" << std::get<1>(qtxt) << '\t' << std::get<2>(qtxt) << "\t" << site_depth << "\t" << germ_depth << "\t-1\t." <<'\n';
       } else { // SNV
         if (var.var_qual < opt.bqual_min * var.read_count) {
           errorstat.snv_filtered_baseq += var.alt_seq.size();
@@ -955,11 +956,25 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
         errorstat.nsnv += nerr;
 
         if (opt.count_read == 0) {
-          qtxt = cpputil::QualContext(var, seg, 3);
+          qtxt = cpputil::QualContext(var, seg, ref, 3);
         }
 
-        ferr << var << '\t' << aux_prefix << '\t' <<  qtxt.first << '\t' <<qtxt.second << "\t" << site_depth << "\t" \
-              << germ_depth << "\t" << protected_strand_orientation << '\n';
+        int cidx = cpputil::GetConvertStrandIndex(seg);
+        string meth_char = string(var.alt_seq.size(), '.');
+        if (cidx != -1) {
+          string methyl_tag;
+          seg[cidx].GetZTag("XM", methyl_tag);
+          for (size_t i = 0; i < var.alt_seq.size(); ++i) {
+            if (seg[cidx].FirstFlag()) {
+              meth_char[i] = methyl_tag[var.r1_start + i];
+            } else {
+              meth_char[i] = methyl_tag[var.r2_start + i];
+            }
+          }
+        }
+
+        ferr << var << '\t' << aux_prefix << '\t' <<  std::get<0>(qtxt) << '\t' << std::get<1> (qtxt) << "\t" << std::get<2> (qtxt) << "\t" << site_depth << "\t" \
+              << germ_depth << "\t" << protected_strand_orientation << "\t" << meth_char << '\n';
 //        for (size_t i = 0; i< var.alt_seq.size(); ++i) {
 //          if (opt.count_read == 2) {
 //            errorstat.monomer_mut_counter[{var.contig_seq[i], '>', var.alt_seq[i]}] += var.read_count;
@@ -1066,7 +1081,7 @@ int codec_accuracy(int argc, char ** argv) {
       std::cerr << "must specify output. -a or -o is not used\n";
       exit(0);
     }
-    opt.mutation_metrics = opt.sample + ".mutation_metrics.txt";
+    opt.mutation_metrics = opt.sample + ".mutant_metrics.txt";
   }
   if (opt.variants_out.empty()) {
     if (opt.sample.empty()) {
@@ -1121,7 +1136,7 @@ int codec_accuracy(int argc, char ** argv) {
   std::ofstream cyclelevel;
   std::ofstream regionlevel;
   string error_profile_header =
-      "chrom\tref_pos\tref\talt\ttype\tdist_to_fragend\tsnv_base_qual\tread_count\tread_name\tfamily_size\tnumN\tnumQpass\tclen\tflen\tqual3p\tqual5p\tsite_depth\tgerm_depth\tpstrand_orientation";
+      "chrom\tref_pos\tref\talt\ttype\tdist_to_fragend\tsnv_base_qual\tread_count\tread_name\tfamily_size\tnumPairMM\tnumQpass\tclen\tflen\treftrinuc\tseql\tseqr\tsite_depth\tgerm_depth\tpstrand_orientation\tmeth_char";
   ferr << "#" << cmdline << std::endl;
   ferr << error_profile_header << std::endl;
 
@@ -1215,6 +1230,7 @@ int codec_accuracy(int argc, char ** argv) {
           //std::cerr << frag[0][0] << " already faile" << std::endl;
           continue;
         }
+        cpputil::ResolveCT_GA_bases_MSPairedReads(ref, isf.bamheader(), frag);
 
         int pair_nmismatch = 0, olen = 0;
         float nqpass;

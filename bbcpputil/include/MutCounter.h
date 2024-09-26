@@ -68,7 +68,7 @@ struct ErrorStat {
   int nindel_filtered_overlap_snp = 0;
   int mismatch_filtered_by_indel = 0;
   int snv_family_disagree = 0;
-  int snv_R1R2_disagree = 0;
+  int64_t snv_R1R2_disagree = 0;
   int snv_filtered_baseq = 0;
   int indel_R1R2_disagree = 0;
   int lowconf_t2g = 0;
@@ -458,33 +458,13 @@ std::tuple<int,int, int> NumMisMatchOrLowQualityInOverlapRegion(const cpputil::S
   std::vector<std::string> dna_pileup, qual_pileup;
   std::tie(dna_pileup, qual_pileup) = GetPairPileup(seg);
 
-  int xc1, xc2;
-  int cidx = 0;
-  bool methyl = false;
-  bool xc1_flag = seg[0].GetIntTag("XC", xc1);
-  bool xc2_flag = seg[1].GetIntTag("XC", xc2);
-  if (xc1_flag and xc2_flag and xc1+xc2 == 1) {
-    methyl = true;
-    cidx = xc1 == 1? 0 : 1;
-  }
   for (unsigned jj = 0; jj < dna_pileup[0].size(); ++jj) {
-    if (dna_pileup[cidx][jj] != '.' and dna_pileup[1-cidx][jj] != '.') {
-      if ( dna_pileup[cidx][jj] >= 'A' and dna_pileup[1-cidx][jj] >= 'A') {
+    if (dna_pileup[0][jj] != '.' and dna_pileup[1][jj] != '.') {
+      if ( dna_pileup[0][jj] >= 'A' and dna_pileup[1][jj] >= 'A') {
         if (dna_pileup[0][jj] == 'N' or dna_pileup[1][jj] == 'N') ++nmis;
         else {
           if(dna_pileup[0][jj] != dna_pileup[1][jj]) {
-            if (not methyl) ++nmis;
-            else {
-              if (seg[cidx].ReverseFlag()) {
-                if (not dna_pileup[cidx][jj] == 'T' or not dna_pileup[1-cidx][jj] == 'C') {
-                  ++nmis;
-                }
-              } else {
-                if (not dna_pileup[cidx][jj] == 'A' or not dna_pileup[1-cidx][jj] == 'G') {
-                  ++nmis;
-                }
-              }
-            }
+            ++nmis;
           }
         }
         if (qual_pileup[0][jj] < minbq + 33 or qual_pileup[1][jj] < minbq + 33) ++nlowbaseq;
@@ -620,16 +600,9 @@ int FailFilter(const vector<cpputil::Segments>& frag,
 
   int nfrag_bases = 0, frag_numN;
   if (seg->size() == 2) {
-    if (methyl) {
-      if ((*seg)[1-cidx].MapQuality() < opt.mapq) {
-        ++errorstat.n_filtered_by_mapq;
-        return 11;
-      }
-    } else {
-      if ((*seg)[0].MapQuality() < opt.mapq || (*seg)[1].MapQuality() < opt.mapq) {
-        ++errorstat.n_filtered_by_mapq;
-        return 11;
-      }
+    if ((*seg)[0].MapQuality() < opt.mapq || (*seg)[1].MapQuality() < opt.mapq) {
+      ++errorstat.n_filtered_by_mapq;
+      return 11;
     }
     if (cpputil::NumSoftClip5End((*seg)[0]) > opt.max_5endclip || cpputil::NumSoftClip5End((*seg)[1]) > opt.max_5endclip) {
       ++errorstat.n_filtered_sclip;
@@ -681,22 +654,20 @@ int FailFilter(const vector<cpputil::Segments>& frag,
     return 10;
   }
 
-  for (const auto &s: *seg) {
+  if (methyl) {
+    if (cpputil::GetNMismatch((*seg)[1-cidx]) > opt.max_snv_filter) {
+      ++errorstat.n_filtered_edit;
+      return 6;
+    }
+  }
 
+  for (const auto &s: *seg) {
     if ((int) s.NumMatchBases() > opt.max_fraglen || abs(s.InsertSize()) > opt.max_fraglen) {
       ++errorstat.n_filtered_largefrag;
       return 5;
     }
 
-    if (methyl) {
-      int xctag;
-      s.GetIntTag("XC", xctag);
-      if (xctag == 0 and cpputil::GetNMismatch(s) > opt.max_snv_filter) {
-        ++errorstat.n_filtered_edit;
-        return 6;
-      }
-
-    } else {
+    if (not methyl) {
       if (cpputil::GetNMismatch(s) > opt.max_snv_filter) {
         ++errorstat.n_filtered_edit;
         return 6;

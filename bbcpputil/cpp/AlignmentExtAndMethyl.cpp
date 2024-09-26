@@ -41,8 +41,42 @@ std::string GetConsensusTemplate(const Segments& segs, int32_t& ref_most_left) {
   return consens;
 }
 
+std::string GetGappedSeqForRef(const SeqLib::RefGenome&ref, const SeqLib::BamHeader& header, const SeqLib::BamRecord &r, const int start, const std::string& consensus_template) {
+  // seq should be same length as r.Sequence() but can with difference sequence
+  // start should be relative start position to the fragment
+  // `.` is overhang
+  // `+` is insertion
+  // `-` is deletion
+  int template_start = 0;
+  std::string consns_templ = consensus_template;
+  auto seq = ref.QueryRegion(header.IDtoName(r.ChrID()), r.PositionWithSClips(), r.PositionEndWithSClips());
+  int ref_count = 0;
+  for (char c : consns_templ) {
+    if (ref_count == start) break;
+    template_start++;
+    if (c == '.') ref_count++;
+  }
+  auto const &cigar = r.GetCigar();
+
+  int ref_start = 0;
+  for (auto c = cigar.begin(); c != cigar.end(); ++c) {
+    if (c->Type() == 'S' || c->Type() == 'M' || c->Type() == 'D') {
+      for (unsigned ii = 0; ii < c->Length(); ++ii) {
+        while ('+' == consns_templ[template_start]) { template_start++; };
+        consns_templ[template_start++] = toupper(seq[ref_start++]);
+      }
+    } else if (c->Type() == 'I') {
+      for (unsigned ii = 0; ii < c->Length(); ++ii) {
+        consns_templ[template_start++] = '+';
+      }
+      while (consns_templ[template_start] == '+') { template_start++; };
+    }
+  }
+  return consns_templ;
+}
+
 std::pair<std::string, std::string>
-    GetGappedSeqAndQual(const SeqLib::BamRecord &r, const std::string& seq, const int start, const std::string& consensus_template) {
+    GetGappedSeqAndQual(const SeqLib::BamRecord &r, const std::string& seq, const int start, const std::string& consensus_template, bool include_soft_clip = true ) {
 
   // seq should be same length as r.Sequence() but can with difference sequence
   // `.` is overhang
@@ -69,6 +103,9 @@ std::pair<std::string, std::string>
         if (c->Type() == 'D') {
           s = '-';
           q = qual[read_start];
+        } else if (c->Type () == 'S' and not include_soft_clip) {
+          s = 'N';
+          q = qual[read_start++];
         } else {
           s = seq[read_start];
           q = qual[read_start++];
@@ -89,22 +126,22 @@ std::pair<std::string, std::string>
   return std::make_pair(consns_templ, quality_templ);
 }
 
-std::string MergePairSeq(const Segments &segs, const std::vector<std::string>& seqs, bool trim_overhang) {
-  //seqs should hold the fastq seq for segs. They could be same length but different seqs
+std::string MergePairSeq(const Segments &seg, const std::vector<std::string>& seqs, bool trim_overhang) {
+  //seqs should hold the fastq seq for seg. They could be same length but different seqs
   //not to change indel
-  assert (segs.size() == 2);
+  assert (seg.size() == 2);
   int ref_most_left;
   const char NUL = 6;
-  const std::string consns_templ = GetConsensusTemplate(segs, ref_most_left);
+  const std::string consns_templ = GetConsensusTemplate(seg, ref_most_left);
   std::string consns_seq1(consns_templ.size(), NUL);
   int32_t start = 0;
   std::string dnaseq, qual;
-  std::vector<std::string> dna_pileup(segs.size());
-  std::vector<std::string> qual_pileup(segs.size());
-  for (unsigned sid = 0; sid < segs.size(); ++sid) {
-    auto const& seg = segs[sid];
-    start = seg.PositionWithSClips() - ref_most_left;
-    std::tie(dnaseq, qual) = GetGappedSeqAndQual(seg, seqs[sid], start, consns_templ);
+  std::vector<std::string> dna_pileup(seg.size());
+  std::vector<std::string> qual_pileup(seg.size());
+  for (unsigned sid = 0; sid < seg.size(); ++sid) {
+    auto const& piece = seg[sid];
+    start = piece.PositionWithSClips() - ref_most_left;
+    std::tie(dnaseq, qual) = GetGappedSeqAndQual(piece, seqs[sid], start, consns_templ);
     dna_pileup[sid] = dnaseq;
     qual_pileup[sid] = qual;
   }
@@ -168,33 +205,72 @@ std::string MergePair(const Segments &seg, bool trim_overhang) {
 //  return seq;
 //}
 
-std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(const Segments &segs) {
-  assert(segs.size() == 2);
+std::pair<std::vector<std::string>, std::vector<std::string>> GetPairPileup(const Segments &seg) {
+  assert(seg.size() == 2);
   const char NUL = 6;
   int ref_most_left;
-  const std::string consns_templ = GetConsensusTemplate(segs, ref_most_left);
+  const std::string consns_templ = GetConsensusTemplate(seg, ref_most_left);
   std::vector<std::string> seqs;
-  for (auto&s : segs) {
+  for (auto&s : seg) {
     seqs.push_back(s.Sequence());
   }
   std::string consns_seq1(consns_templ.size(), NUL);
   std::string consns_seq2(consns_templ.size(), NUL);
   int32_t start = 0;
   std::string dnaseq, qual;
-  std::vector<std::string> dna_pileup(segs.size());
-  std::vector<std::string> qual_pileup(segs.size());
-  for (unsigned sid = 0; sid < segs.size(); ++sid) {
-    auto const& seg = segs[sid];
-    start = seg.PositionWithSClips() - ref_most_left;
-    std::tie(dnaseq, qual) = GetGappedSeqAndQual(seg, seqs[sid], start, consns_templ);
+  std::vector<std::string> dna_pileup(seg.size());
+  std::vector<std::string> qual_pileup(seg.size());
+  for (unsigned sid = 0; sid < seg.size(); ++sid) {
+    auto const& piece = seg[sid];
+    start = piece.PositionWithSClips() - ref_most_left;
+    std::tie(dnaseq, qual) = GetGappedSeqAndQual(piece, seqs[sid], start, consns_templ);
     dna_pileup[sid] = dnaseq;
     qual_pileup[sid] = qual;
   }
   return std::make_pair(dna_pileup, qual_pileup);
 }
 
-std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& bamheader, const Segments &segs, bool call_overhang, int qcutoff, int eof) {
+char ResolveCytosineContextSS(const std::string& cvt_dna_str, const std::string& qual_str, const std::string& ref_str, int jj, int qcutoff_char, bool cvs_is_reverse) {
+    if ((cvt_dna_str[jj] == ref_str[jj])  or
+        (cvs_is_reverse && cvt_dna_str[jj] == 'T' and ref_str[jj] == 'C') or
+    (not cvs_is_reverse && cvt_dna_str[jj] == 'A' and ref_str[jj] == 'G'))
+    {
+      return ref_str[jj];
+    }
+    if (qual_str[jj] >= qcutoff_char) {
+      return cvt_dna_str[jj];
+    } else {
+      return ref_str[jj];
+    }
+}
+
+char ResolveCytosineContextDS(const std::string& cvt_dna_str, const std::string& cvt_qual_str,
+                              const std::string& prt_dna_str, const std::string& prt_qualt_str,
+                              const std::string& ref_str, int jj, int qcutoff_char, bool cvs_is_reverse) {
+  if (cvt_qual_str[jj] >= qcutoff_char and prt_qualt_str[jj] >= qcutoff_char) {
+    if (cvt_dna_str[jj] == prt_dna_str[jj]) {
+      return prt_dna_str[jj];
+    } else if ((cvs_is_reverse and prt_dna_str[jj] == 'C' and cvt_dna_str[jj] == 'T') or
+            (not cvs_is_reverse and prt_dna_str[jj] == 'G' and cvt_dna_str[jj] == 'A')) {
+      return prt_dna_str[jj];
+    } else {
+      return 'N';
+    }
+  } else {
+    if (cvt_dna_str[jj] == prt_dna_str[jj] and prt_dna_str[jj] == ref_str[jj]) {
+      return ref_str[jj];
+    } else if ((cvs_is_reverse and prt_dna_str[jj] == 'C' and cvt_dna_str[jj] == 'T' and ref_str[jj] == 'C') or
+               (not cvs_is_reverse and prt_dna_str[jj] == 'G' and cvt_dna_str[jj] == 'A' and ref_str[jj] == 'G')) {
+      return ref_str[jj];
+    } else {
+      return 'N';
+    }
+  }
+}
+
+std::string CallMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& bamheader, const Segments &segs, bool call_overhang, int qcutoff, int eof) {
   // eof: min distance to the end of fragment filter
+  // this will not call methylation status at soft clip regions by setting include_soft_clip = false in GetGappedSeqAndQual() which return 'N' at soft clip regions
   std::string metstr;
   assert (segs.size() == 2);
   int32_t ref_most_left;
@@ -204,13 +280,16 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
     return metstr;
   }
   int32_t start = 0;
-  std::string dnaseq, qual;
+  std::string dnaseq, qual, ref_pileup;
   std::vector<std::string> dna_pileup(segs.size());
   std::vector<std::string> qual_pileup(segs.size());
   for (unsigned sid = 0; sid < segs.size(); ++sid) {
     auto const& seg = segs[sid];
     start = seg.PositionWithSClips() - ref_most_left;
-    std::tie(dnaseq, qual) = GetGappedSeqAndQual(seg, seg.Sequence(), start, consns_templ);
+    std::tie(dnaseq, qual) = GetGappedSeqAndQual(seg, seg.Sequence(), start, consns_templ, false);
+    if (sid == 1) { // ref pileup only for converted strand
+      ref_pileup = GetGappedSeqForRef(ref, bamheader, seg, start, consns_templ);
+    }
     dna_pileup[sid] = dnaseq;
     qual_pileup[sid] = qual;
   }
@@ -225,12 +304,12 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
   int cs_idx = 1;
   int cs_reverse = segs[cs_idx].ReverseFlag();
 
+
   char qcutoff_char = static_cast<char>(33 + qcutoff);
-  auto refseq = ref.QueryRegion(segs[0].ChrName(bamheader), ref_most_left, ref_most_left + consns_templ.size()) ;
-  unsigned refpos = 0;
-  char refc = 0;
+  //unsigned refpos = 0;
+  //char refc = 0;
   for (unsigned jj = 0; jj < consns_templ.size(); ++jj) {
-    if (consns_templ[jj] != '+') refc = refseq[refpos++];
+    //if (consns_templ[jj] != '+') refc = toupper(refseq[refpos++]);
     if (jj < eof or jj + eof >= consns_templ.size()) {
       if (IsdNTP(dna_pileup[cs_idx][jj])) {
         metstr += ".";
@@ -242,14 +321,14 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
         if (cs_reverse) {
           if ((dna_pileup[cs_idx][jj] == 'C' or dna_pileup[cs_idx][jj] == 'T') and qual_pileup[cs_idx][jj] >= qcutoff_char) {
             CCTX cctx = CCTX::Other;
-            if (jj + 1 < consns_templ.size() and
-                qual_pileup[cs_idx][jj+1] >= qcutoff_char){
-              if (dna_pileup[cs_idx][jj+1] == 'G') {
+            if (jj + 1 < consns_templ.size()) {
+              char c1 = ResolveCytosineContextSS(dna_pileup[cs_idx], qual_pileup[cs_idx], ref_pileup, jj+1, qcutoff_char, cs_reverse);
+              if (c1 == 'G') {
                 cctx = CCTX::CpG;
-              } else if (IsH(dna_pileup[cs_idx][jj+1])) {
-                if (jj + 2 < consns_templ.size() and
-                    qual_pileup[cs_idx][jj+2] >= qcutoff_char) {
-                  if (IsH(dna_pileup[cs_idx][jj+2])) {
+              } else if (IsH(c1)) {
+                if (jj + 2 < consns_templ.size()) {
+                  char c2 = ResolveCytosineContextSS(dna_pileup[cs_idx], qual_pileup[cs_idx], ref_pileup, jj+2, qcutoff_char, cs_reverse);
+                  if (IsH(c2)) {
                     cctx = CCTX::CHH;
                   } else if (dna_pileup[cs_idx][jj+2] == 'G') {
                     cctx = CCTX::CHG;
@@ -272,16 +351,16 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
         } else { // on forward strand
           if ((dna_pileup[cs_idx][jj] == 'G' or dna_pileup[cs_idx][jj] == 'A') and qual_pileup[cs_idx][jj] >= qcutoff_char) {
             CCTX cctx = CCTX::Other;
-            if (jj > 0 and
-                qual_pileup[cs_idx][jj-1] >= qcutoff_char){
-              if (dna_pileup[cs_idx][jj-1] == 'C') {
+            if (jj > 0) {
+              char c1 = ResolveCytosineContextSS(dna_pileup[cs_idx], qual_pileup[cs_idx], ref_pileup, jj-1, qcutoff_char, cs_reverse);
+              if (c1 == 'C') {
                 cctx = CCTX::CpG;
-              } else if (IsComplementH(dna_pileup[cs_idx][jj-1])) {
-                if (jj > 1 and
-                    qual_pileup[cs_idx][jj-2] >= qcutoff_char) {
-                  if (IsComplementH(dna_pileup[cs_idx][jj-2])) {
+              } else if (IsComplementH(c1)) {
+                if (jj > 1) {
+                  char c2 = ResolveCytosineContextSS(dna_pileup[cs_idx], qual_pileup[cs_idx], ref_pileup, jj-2, qcutoff_char, cs_reverse);
+                  if (IsComplementH(c2)) {
                     cctx = CCTX::CHH;
-                  } else if (dna_pileup[cs_idx][jj-2] == 'C') {
+                  } else if (c2 == 'C') {
                     cctx = CCTX::CHG;
                   }
                 }
@@ -308,24 +387,24 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
     } else { // not overhang
       if (cs_reverse) { // cs reverse strand
         if (dna_pileup[1-cs_idx][jj] == 'C' and
+            //ref_pileup[jj] == 'C' and
             qual_pileup[1-cs_idx][jj] >= qcutoff_char and
             qual_pileup[cs_idx][jj] >= qcutoff_char) {
 
           CCTX cctx = CCTX::Other;
-          if (jj + 1 < dna_pileup[cs_idx].size() and
-            qual_pileup[cs_idx][jj+1] >= qcutoff_char and
-            qual_pileup[1-cs_idx][jj+1] >= qcutoff_char) {
-            if (dna_pileup[cs_idx][jj+1] == 'G' and dna_pileup[1-cs_idx][jj+1] == 'G') {
+          if (jj + 1 < dna_pileup[cs_idx].size()) {
+            auto c1 = ResolveCytosineContextDS(dna_pileup[cs_idx], qual_pileup[cs_idx], dna_pileup[1-cs_idx], qual_pileup[1-cs_idx], ref_pileup, jj+1, qcutoff_char, cs_reverse);
+            if (c1 == 'N') {
+              cctx = CCTX::Other;
+            }
+            else if (c1 == 'G') {
               cctx = CCTX::CpG;
-            } else if ((dna_pileup[cs_idx][jj+1] == dna_pileup[1-cs_idx][jj+1] and IsH(dna_pileup[1-cs_idx][jj+1])) or
-                       (dna_pileup[cs_idx][jj+1] == 'T' and dna_pileup[1-cs_idx][jj+1]=='C')) {
-              if (jj + 2 < dna_pileup[cs_idx].size() and
-                  qual_pileup[cs_idx][jj+2] >= qcutoff_char and
-                  qual_pileup[1-cs_idx][jj+2] >= qcutoff_char) {
-                if ((dna_pileup[cs_idx][jj+2] == dna_pileup[1- cs_idx][jj+2] and IsH(dna_pileup[1-cs_idx][jj+2])) or
-                        (dna_pileup[cs_idx][jj+2] == 'T' and dna_pileup[1-cs_idx][jj+2]=='C')) {
+            } else if (IsH(c1)) {
+              if (jj + 2 < dna_pileup[cs_idx].size()) {
+                auto c2 = ResolveCytosineContextDS(dna_pileup[cs_idx], qual_pileup[cs_idx], dna_pileup[1-cs_idx], qual_pileup[1-cs_idx], ref_pileup, jj+2, qcutoff_char, cs_reverse);
+                if (IsH(c2)) {
                   cctx = CCTX::CHH;
-                } else if (dna_pileup[1-cs_idx][jj+2] == 'G' and dna_pileup[cs_idx][jj+2] == 'G') {
+                } else if (c2 == 'G') {
                   cctx = CCTX::CHG;
                 }
               }
@@ -337,14 +416,15 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
               metstr += std::string(1, BisMarkSymb(true, cctx));
               break;
             case 'T':
-              if (refc == 'C') {
-                metstr += std::string(1, BisMarkSymb(false, cctx));
-              } else {
-                metstr += ".";
-              }
+              //if (refc == 'C') {
+              metstr += std::string(1, BisMarkSymb(false, cctx));
+//              } else {
+//                metstr += ".";
+//              }
               break;
             case 'G':
             case 'A': // seq error
+            case 'N':
               metstr += ".";
               break;
             default:
@@ -355,24 +435,27 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
         }
       } else { // cs forward strand
         if (dna_pileup[1-cs_idx][jj] == 'G' and
+            //ref_pileup[jj] == 'G' and
             qual_pileup[1-cs_idx][jj] >= qcutoff_char and
             qual_pileup[cs_idx][jj] >= qcutoff_char) {
 
           CCTX cctx = CCTX::Other;
-          if (jj > 0 and
-              qual_pileup[cs_idx][jj-1] >= qcutoff_char and
-              qual_pileup[1-cs_idx][jj-1] >= qcutoff_char) {
-            if (dna_pileup[1-cs_idx][jj-1] == 'C' and dna_pileup[cs_idx][jj-1] == 'C') {
+          if (jj > 0) {
+            auto c1 = ResolveCytosineContextDS(dna_pileup[cs_idx], qual_pileup[cs_idx], dna_pileup[1-cs_idx], qual_pileup[1-cs_idx], ref_pileup, jj-1, qcutoff_char, cs_reverse);
+            if (c1 == 'N') {
+              cctx = CCTX::Other;
+            }
+            else if (c1 == 'C') {
               cctx = CCTX::CpG;
-            } else if ((dna_pileup[cs_idx][jj-1] ==  dna_pileup[1-cs_idx][jj-1] and IsComplementH(dna_pileup[1-cs_idx][jj-1])) or
-                       (dna_pileup[cs_idx][jj-1] == 'A' and dna_pileup[1 - cs_idx][jj-1] == 'G')) {
-              if (jj > 1 and
-                  qual_pileup[cs_idx][jj-2] >= qcutoff_char and
-                  qual_pileup[1-cs_idx][jj-2] >= qcutoff_char) {
-                if ((dna_pileup[cs_idx][jj-2] ==  dna_pileup[1-cs_idx][jj-2] and IsComplementH(dna_pileup[1-cs_idx][jj-2]))
-                     or (dna_pileup[cs_idx][jj-2] == 'A' and dna_pileup[1 - cs_idx][jj-2] == 'G')) {
+            } else if (IsComplementH(c1)) {
+              if (jj > 1) {
+                auto c2 = ResolveCytosineContextDS(dna_pileup[cs_idx], qual_pileup[cs_idx], dna_pileup[1-cs_idx], qual_pileup[1-cs_idx], ref_pileup, jj-2, qcutoff_char, cs_reverse);
+                if (c2 == 'N') {
+                  cctx = CCTX::Other;
+                }
+                else if (IsComplementH(c2)) {
                   cctx = CCTX::CHH;
-                } else if (dna_pileup[1-cs_idx][jj-2] == 'C' and dna_pileup[cs_idx][jj-2] =='C') {
+                } else if (c2 == 'C') {
                   cctx = CCTX::CHG;
                 }
               }
@@ -388,6 +471,7 @@ std::string CallingMetC(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& b
               break;
             case 'C':
             case 'T':
+            case 'N':
               metstr += ".";
               break;
             default:
@@ -495,6 +579,55 @@ int IsCorrectMSPairedReads2(const Segments& seg, const TScoringScheme& ss, const
   } else {
     return 0;
   }
+}
+
+int GetConvertStrandIndex(const Segments& seg) {
+  int xc1, xc2;
+  int cidx = -1;
+  bool xc1_flag = seg[0].GetIntTag("XC", xc1);
+  bool xc2_flag = seg[1].GetIntTag("XC", xc2);
+  if (xc1_flag and xc2_flag and xc1+xc2 == 1) {
+    cidx = xc1 == 1? 0 : 1;
+  }
+  return cidx;
+}
+
+void ResolveCT_GA_bases_MSPairedReads(const SeqLib::RefGenome& ref, const SeqLib::BamHeader& header, std::vector<Segments>& frag) {
+  for (auto & seg : frag) {
+    int cidx = GetConvertStrandIndex(seg);
+    if (cidx != -1) {
+      int ref_most_left;
+      const char NUL = 6;
+      const std::string consns_templ = GetConsensusTemplate(seg, ref_most_left);
+      //std::string cnvt_ref_templ = GetGappedSeqForRef(ref, header, seg[cidx], seg[cidx].PositionWithSClips() - ref_most_left, consns_templ);
+      std::string cnvt_read_seq(consns_templ.size(), NUL);
+
+      std::vector<std::string> dna_pileup, qual_pileup;
+      std::tie(dna_pileup, qual_pileup) = GetPairPileup(seg);
+      for (unsigned jj = 0; jj < dna_pileup[0].size(); ++jj) {
+        if (dna_pileup[cidx][jj] >= 'A') {
+           if (seg[cidx].ReverseFlag()) {
+             if (dna_pileup[cidx][jj] == 'T' and dna_pileup[1-cidx][jj] == 'C' /*and cnvt_ref_templ[jj] != 'T'*/) {
+               cnvt_read_seq[jj] = 'C';
+             } else {
+               cnvt_read_seq[jj] = dna_pileup[cidx][jj];
+             }
+           } else {
+             if (dna_pileup[cidx][jj] == 'A' and dna_pileup[1-cidx][jj] == 'G' /*and cnvt_ref_templ[jj] != 'A'*/) {
+               cnvt_read_seq[jj] = 'G';
+             } else {
+                cnvt_read_seq[jj] = dna_pileup[cidx][jj];
+             }
+           }
+        }
+      }
+      cnvt_read_seq.erase(std::remove(cnvt_read_seq.begin(), cnvt_read_seq.end(), NUL), cnvt_read_seq.end());
+      auto qual = seg[cidx].Qualities(0);
+      seg[cidx].SetSequence(cnvt_read_seq);
+      seg[cidx].SetQualities(qual, 0);
+    }
+  }
+  return;
 }
 
 SeqLib::BamRecord SingleEndBWA(const SeqLib::BWAWrapper& bwa, const SeqLib::BamRecord& ubam, const int MIN_READL) {

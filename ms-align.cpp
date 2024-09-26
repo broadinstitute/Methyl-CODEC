@@ -108,7 +108,7 @@ void consensus_print_help()
   std::cerr<< "-o/--outprefix,                        Output sample prefix [required].\n";
   std::cerr<< "-m/--mapq,                             Min mapping quality [10].\n";
   std::cerr<< "-q/--baseq,                            Min base quality for calling both strand for calling metC[0].\n";
-  std::cerr<< "-e/--min_eof_dist,                     Min distance to the end of the fragments for calling metC. [0].\n";
+  std::cerr<< "-d/--min_eof_dist,                     Min distance to the end of the fragments for calling metC. [0].\n";
   std::cerr<< "-r/--reference,                        Reference for alignment. [null].\n";
   //Supplementary not support currently
   //std::cerr<< "-l/--load_supplementary,               Include supplementary alignment [false].\n";
@@ -422,8 +422,8 @@ int codec_ms_align(int argc, char ** argv) {
               bam_cs.shared_pointer()->core.isize = bam_et.PositionEnd() - bam_cs.Position() + 1;
             }
             cpputil::Segments aligned_segs = {bam_et, bam_cs};
-            auto metc = cpputil::CallingMetC(refseq, bh, aligned_segs, opt.call_overhang, opt.minbq, opt.min_eof_dist);
-            if (metc.empty()) {
+            auto metc = cpputil::CallMetC(refseq, bh, aligned_segs, opt.call_overhang, opt.minbq, opt.min_eof_dist);
+            if (metc.empty() and not opt.itermol_out.empty()) {
               std::string qname = seg[0].Qname();
               if (first_read_extended) {
                 single_prot_strand_fq_writer.Write(qname +"/1", seg[0].Sequence(), seg[0].Qualities());
