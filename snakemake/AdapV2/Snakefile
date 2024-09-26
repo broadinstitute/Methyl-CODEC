@@ -26,6 +26,8 @@ AGG_LOG_SCRIPT=f"{CODEC_root}/snakemake/script/agg_log.py"
 MSCODEC_FIX_PROPER_PAIR_FLAG=f"{CODEC_root}/snakemake/script/mscodec_fixproperpair_and_cal_byprod.py"
 MSCODEC_INTEGRATE_PAIR=f"{CODEC_root}/snakemake/script/mscodec_integrate_pairs.py"
 MSCODEC_GET_METHYL_READ=f"{CODEC_root}/snakemake/script/mscodec_separate_methreads.py"
+MSCODEC_filter_CSTRAND=f"{CODEC_root}/snakemake/script/mscodec_filter_cstrand.py"
+MSCODEC_count_monomer=f"{CODEC_root}/snakemake/script/mscodec_count_monomer_types.py"
 SPLIT_SCRIPT=f"{CODEC_root}/snakemake/script/fastqsplit.pl"
 
 JAVA_PARAMS = "-Xmx30g -Djava.io.tmpdir=/tmp"
@@ -59,7 +61,7 @@ rule SplitFastq1:
           split = temp(expand("/broad/hptmp/ruolin/{prjdir}/{{id}}_split_r1.{ss}.fastq", ss = SPLITS, prjdir=PROJECT))
     resources:
         mem = 8,
-        runtime = 24
+        runtime = 48
     shell:
         """
         zcat {input} | {SPLIT_SCRIPT} {params.prefix} {params.nsplit}
@@ -75,7 +77,7 @@ rule SplitFastq2:
           split = temp(expand("/broad/hptmp/ruolin/{prjdir}/{{id}}_split_r2.{ss}.fastq", ss = SPLITS, prjdir=PROJECT))
     resources:
         mem = 8,
-        runtime = 24
+        runtime = 48
     shell:
          """
          zcat {input} | {SPLIT_SCRIPT} {params.prefix} {params.nsplit}
@@ -157,7 +159,7 @@ rule MethylAlign:
         log = temp("tmp/{batch_id}_split.{ss}.{index}.msalign.log")
     params:
         outprefix = "tmp/{batch_id}_split.{ss}.{index}",
-        rg_str = "@RG\tID:{batch_id}\tSM:bar{index}",
+        rg_str = "@RG\tID:{batch_id}\tSM:{index}",
     resources:
         mem = 16,
         runtime = 72,
@@ -200,7 +202,7 @@ rule MergeBamSplit:
     resources:
           mem = 8,
           runtime = 72,
-          ncores = config['ncores']
+          ncores = 1
     shell:
          """
          samtools merge -@ {resources.ncores} {output.merged} {input} && samtools sort -@ {resources.ncores} {output.merged} -o {output.sorted}
@@ -235,7 +237,7 @@ rule MergeSinglePstrandBamSplit:
     resources:
         mem = 8,
         runtime = 72,
-        ncores = config['ncores']
+        ncores = 1
     shell:
         """
         samtools merge -@ {resources.ncores} {output} {input} 
@@ -254,7 +256,7 @@ rule BismarkSingleCStrand:
     resources:
         mem = 8,
         runtime = 72,
-        ncores = config['ncores']
+        ncores = 3
     shell:
         """
         bismark ~/ruolin/database/genome/human/hg38/bismark_bowtie2_ref/ {input} --basename {params.sample} -o tmp --pbat --local -p {resources.ncores}
@@ -270,8 +272,8 @@ rule MergeSingleCStrandBismarkBam:
         index = "[0-9a-zA-Z_-]+"
     resources:
         mem = 8,
-        runtime = 24,
-        ncores = config['ncores']
+        runtime = 48,
+        ncores = 1
     shell:
         """
         samtools merge {input} -o {output} -@ {resources.ncores}
@@ -375,7 +377,7 @@ rule MergeDoubleStrandReadsGroup:
           bam = temp("tmp/{index}.all_ds_reads.sorted.bam")
     resources:
              mem = 8,
-             ncores = config['ncores'],
+             ncores = 1,
              runtime = 72,
     wildcard_constraints:
         index = "[0-9a-zA-Z_-]+",
@@ -389,7 +391,7 @@ rule MarkPairedDuplicates:
     input:
         bam="tmp/{index}.all_ds_reads.sorted.bam"
     resources:
-        mem = 16,
+        mem = 36,
         runtime = 48,
     output:
         bam = "ms-aligned-bam/{index}.ds_reads.markdup.bam",
@@ -461,7 +463,6 @@ rule MarkSingleCStrandDuplicates:
         {PICARD} MarkDuplicates I={input.bam} O={output.bam} M={output.met} CREATE_INDEX=true TAG_DUPLICATE_SET_MEMBERS=true TAGGING_POLICY=All
         """
 
-
 rule OutputConvertedStrand:
     input:
         bam = "ms-aligned-bam/{index}.ds_reads.markdup.bam",
@@ -487,19 +488,32 @@ rule CollectInsertSizeMetrics:
          {PICARD} CollectInsertSizeMetrics I={input.bam} O={output.txt} H={output.hist} M=0.5 W=600 DEVIATIONS=100
          """
 
-rule BismarkExtractMethylation:
+rule FilterConvertedStrandForMethylationExtraction:
     input:
         "ms-aligned-bam/{index}.converted_strand.duplicate_removed.bam",
     output:
-        "bismark/{index}.converted_strand.duplicate_removed.CpG_report.txt.gz",
-        "bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.cov"
+        "ms-aligned-bam/{index}.converted_strand.filtered.bam",
+    resources:
+        mem = 4,
+        runtime = 96,
+    shell:
+        """
+        {MSCODEC_filter_CSTRAND} {input} {output} -a 60 -b 60 -s 30
+        """
+
+rule BismarkExtractMethylation:
+    input:
+        "ms-aligned-bam/{index}.converted_strand.filtered.bam",
+    output:
+        "bismark/{index}.converted_strand.filtered.CpG_report.txt.gz",
+        "bismark/{index}.converted_strand.filtered.bedGraph.gz.bismark.zero.cov"
     resources:
         mem = 8,
         runtime = 96,
-        ncores = config['ncores']
+        ncores = 1
     shell:
         """
-        bismark_methylation_extractor -s --ignore 12 --ignore_3prime 2 --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
+        bismark_methylation_extractor -s --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
             --bedGraph --gzip {input} -o bismark --zero_based --comprehensive --parallel {resources.ncores}
         """
 rule RemoveDuplciateInSingleConvertedStrand:
@@ -524,7 +538,7 @@ rule BismarkExtractMethylationSingleStrand:
     resources:
         mem = 8,
         runtime = 96,
-        ncores = config['ncores']
+        ncores = 1,
     shell:
         """
         bismark_methylation_extractor -s --ignore 12 --ignore_3prime 2 --cytosine_report --genome_folder /xchip/bloodbiopsy/ruolin/database/genome/human/hg38/  \
@@ -533,10 +547,10 @@ rule BismarkExtractMethylationSingleStrand:
 
 rule BismarkMethylationBedGraphMerge:
     input:
-        correct="bismark/{index}.converted_strand.duplicate_removed.bedGraph.gz.bismark.zero.cov",
+        correct="bismark/{index}.converted_strand.filtered.bedGraph.gz.bismark.zero.cov",
         #byproduct="bismark/{index}.converted_strand_only.duplicate_removed.bedGraph.gz.bismark.zero.cov"
     output:
-        "bismark/{index}.converted_strand.duplicate_removed.nodecoy.strand_merge.cov"
+        "bismark/{index}.correct_products.nodecoy.strand_merge.cov"
     resources:
         mem = 4,
         runtime = 24,

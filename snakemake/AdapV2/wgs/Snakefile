@@ -8,12 +8,12 @@ rule all:
         expand("ms-aligned-bam/{index}.converted_strand.duplicate_removed.bam", index=sample_names),
         expand(ADAPTER_TRIM_OUT + "/{batch_id}.{index}.trim.log", index=sample_names, batch_id=batch_ids),
         expand(Metrics_OUT + "/{batch_id}.{index}.msalign.log",index=sample_names, batch_id=batch_ids),
-        expand("bismark/{index}.converted_strand.duplicate_removed.nodecoy.strand_merge.cov", index=sample_names),
+        expand("bismark/{index}.correct_products.nodecoy.strand_merge.cov", index=sample_names),
         expand(Metrics_OUT + "/{index}.raw.insert_size_metrics.txt", index=sample_names),
         expand(Metrics_OUT + "/byproduct/{batch_id}.{index}.byproduct.txt", index=sample_names, batch_id=batch_ids),
         expand(Metrics_OUT + "/{index}.{datatype}.wgs_metrics.txt",index=sample_names, datatype=["ds_reads", "converted_strand_only", "protected_strand_only"]),
         expand("bismark/{index}.converted_strand_only.duplicate_removed.CpG_report.txt.gz",index=sample_names),
-        #expand("raw_sfc/{index}.mutant_metrics.txt", index=sample_names)
+        expand("raw_sfc/{index}.monomer_count.txt", index=sample_names)
 
 rule CollectWgsMetrics:
     input:
@@ -169,3 +169,17 @@ rule RAW_SFC_ErrorMetrics:
                 -e {output.called} \
                 -C {output.context}
          """
+
+rule RawSFCMonomerCount:
+    input:
+        accu = "raw_sfc/{index}.mutant_metrics.txt",
+        called = "raw_sfc/{index}.variants_called.txt",
+    output:
+        "raw_sfc/{index}.monomer_count.txt"
+    resources:
+        mem = 32,
+        runtime = 48
+    shell:
+        """
+        MSCODEC_count_monomer {input.called} {input.accu} {output}
+        """
