@@ -59,9 +59,10 @@ struct CssOptions {
   bool clip3 = false;
 //  int consensus_mode = 0;
   int pair_min_overlap = 1;
-  int max_read = 0;
+//  int max_read = 0;
   int min_overlap = 30;
   bool call_overhang = false;
+  bool modC_in_ER = false;
   string reference = "";
   string read_group_header = "";
 //  bool strand_specific_fastq = false;
@@ -87,17 +88,18 @@ static struct option  consensus_long_options[] = {
     {"mapq",                     required_argument ,     0,        'm'},
     {"baseq",                    required_argument ,     0,        'q'},
     {"eof",                      required_argument ,     0,        'd'},
+    {"modC_in_ER",               no_argument ,           0,        'M'},
     {"outprefix",                required_argument ,     0,        'o'},
     {"pair_min_overlap",         required_argument,      0,        'p'},
     {"call_overhang",            no_argument,            0,        't'},
 //    {"strand_specific_fastq",   no_argument,            0,        's'},
     {"intermol_bam",            required_argument,            0,        'i'},
-    {"max_read",                 required_argument,      0,        'M'},
+//    {"max_read",                 required_argument,      0,        'M'},
     {"read_group_header",        required_argument,      0,        'R'},
     {0,0,0,0}
 };
 
-const char* consensus_short_options = "b:m:M:o:lCp:q:d:ti:r:R:";
+const char* consensus_short_options = "b:m:Mo:lCp:q:d:ti:r:R:";
 
 void consensus_print_help()
 {
@@ -121,7 +123,7 @@ void consensus_print_help()
 //  std::cerr<< "-T/--thread,                           Number of threads for sort [1]\n";
   std::cerr<< "-i/--itermol_out,                      Output of non overlapping read-pairs, usually caused by intermolecular ligation. Bam output for protected strand and Fastq for original strand.  [False]\n";
   std::cerr<< "-R/--read_group_header,                read group header line such as '@RG\tID:foo\tSM:bar'. just like bwa\n";
-  std::cerr<< "-M/--max_read,                         Maximum number of read pair process. [Inf]\n";
+  std::cerr<< "-M/--modC_in_ER,                       If modificed C is used in end-repair [false]\n";
 }
 
 int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
@@ -168,7 +170,8 @@ int consensus_parse_options(int argc, char* argv[], CssOptions& opt) {
 //        opt.strand_specific_fastq = true;
 //        break;
       case 'M':
-        opt.max_read = atoi(optarg);
+        opt.modC_in_ER = true;
+//        opt.max_read = atoi(optarg);
         break;
       case 'p':
         opt.pair_min_overlap = atoi(optarg);
@@ -516,12 +519,6 @@ int codec_ms_align(int argc, char ** argv) {
           }
         }
       }
-      if (libstat.total_pairs == opt.max_read) {
-        break;
-      }
-    }
-    if (libstat.total_pairs == opt.max_read) {
-      break;
     }
   }
   bam_writer.Close();

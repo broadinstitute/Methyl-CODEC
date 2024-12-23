@@ -254,7 +254,12 @@ std::tuple<std::string, std::string, std::string, std::string, std::string> Qual
   //return 5'(upstream) qualities in reverse direction
   std::string left_qual,right_qual;
   std::string left_seq, right_seq;
-  auto refseq = ref.QueryRegion(var.contig, var.contig_start - 1, var.contig_start + 1);
+  std::string refseq;
+  if (var.isIndel()) {
+    refseq = ref.QueryRegion(var.contig, var.contig_start - 1, var.contig_start + 1);
+  } else {
+    refseq = ref.QueryRegion(var.contig, var.contig_start - 1, var.contig_start + var.alt_seq.size());
+  }
   if (bams.size() == 1) {
     auto qual = bams[0].Qualities();
     auto seq = bams[0].Sequence();
@@ -266,12 +271,12 @@ std::tuple<std::string, std::string, std::string, std::string, std::string> Qual
       left_qual = qual.substr(var.r1_start - w, w);
       left_seq = seq.substr(var.r1_start - w, w);
     }
-    if (var.r1_start + w >= (int) qual.size() && var.r1_start + 1 < (int) qual.size()) {
+    if (var.r1_start + (int) var.alt_seq.size() + w >= (int) qual.size() && var.r1_start + (int) var.alt_seq.size() < (int) qual.size()) {
       right_qual = qual.substr(var.r1_start + 1);
       right_seq = seq.substr(var.r1_start + 1);
     } else {
-      right_qual = qual.substr(var.r1_start + 1, w);
-      right_seq = seq.substr(var.r1_start + 1, w);
+      right_qual = qual.substr(var.r1_start + var.alt_seq.size(), w);
+      right_seq = seq.substr(var.r1_start + var.alt_seq.size(), w);
     }
     std::reverse(left_qual.begin(), left_qual.end());
     std::reverse(left_seq.begin(), left_seq.end());
@@ -290,9 +295,9 @@ std::tuple<std::string, std::string, std::string, std::string, std::string> Qual
         left_qual += qual1[var.r1_start - ii] + qual2[var.r2_start - ii];
         left_seq += seq1[var.r1_start - ii] == seq2[var.r2_start - ii] ? seq1[var.r1_start - ii] : 'N';
       }
-      if(var.r1_start + ii < (int) qual1.size() && var.r2_start + ii < (int) qual2.size()) {
-        right_qual += qual1[var.r1_start + ii] + qual2[var.r2_start + ii];
-        right_seq += seq1[var.r1_start + ii] == seq2[var.r2_start + ii] ? seq1[var.r1_start + ii] : 'N';
+      if(var.r1_start + var.alt_seq.size() -1 + ii < (int) qual1.size() && var.r2_start + var.alt_seq.size() -1 +ii < (int) qual2.size()) {
+        right_qual += qual1[var.r1_start + var.alt_seq.size() -1 + ii] + qual2[var.r2_start + var.alt_seq.size() -1 + ii];
+        right_seq += seq1[var.r1_start + var.alt_seq.size() -1 +ii] == seq2[var.r2_start + var.alt_seq.size() -1 +ii] ? seq1[var.r1_start + var.alt_seq.size() -1 +ii] : 'N';
       }
     }
     std::reverse(left_seq.begin(), left_seq.end());

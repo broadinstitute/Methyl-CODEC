@@ -3,7 +3,7 @@
 //
 // Changes for MSCODEC compared to standard CODECsuite:
 // 1. in the fragment level filtering step, the mismatch C>T, G>A will not be counted as a mismatch.
-// 2. allow some degree of softclipping at the 5' end of the read (e.g. 3bp). This is controled as a command line option.
+// 2. allow some degree of softclipping at the 5' end of the read (e.g. 3bp). This is controlled as a command line option.
 // 3. Number of mismatch against reference filter is computed only for protected strand. Due to the NM and MD tag does not account for converted bases
 
 #include <iostream>
