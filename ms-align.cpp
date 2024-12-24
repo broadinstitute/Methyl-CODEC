@@ -104,7 +104,7 @@ const char* consensus_short_options = "b:m:Mo:lCp:q:d:ti:r:R:";
 void consensus_print_help()
 {
   std::cerr<< "---------------------------------------------------\n";
-  std::cerr<< "Usage: codec consensus [options]\n";
+  std::cerr<< "Usage: codec msalign [options]\n";
   std::cerr<< "General Options:\n";
   std::cerr<< "-b/--bam,                              Input bam [required]\n";
   std::cerr<< "-o/--outprefix,                        Output sample prefix [required].\n";
