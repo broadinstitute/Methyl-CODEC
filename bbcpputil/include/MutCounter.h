@@ -583,13 +583,10 @@ int FailFilter(const vector<cpputil::Segments>& frag,
   }
 
   int xc1, xc2;
-  int cidx = 1;
-  bool methyl = false;
-  bool xc1_flag = (*seg)[0].GetIntTag("XC", xc1);
-  bool xc2_flag = (*seg)[1].GetIntTag("XC", xc2);
-  if (xc1_flag and xc2_flag and xc1+xc2 == 1) {
-    methyl = true;
-    cidx = xc1 == 1? 0 : 1;
+  int cidx = GetConvertStrandIndex(*seg);
+  bool methyl = true;
+  if (cidx != -1) {
+    methyl = false;
   }
 
   olen = EffFragLen(*seg, opt.count_read);
@@ -654,7 +651,7 @@ int FailFilter(const vector<cpputil::Segments>& frag,
     return 10;
   }
 
-  if (methyl) {
+  if (methyl and (*seg).size() == 2) {
     if (cpputil::GetNMismatch((*seg)[1-cidx]) > opt.max_snv_filter) {
       ++errorstat.n_filtered_edit;
       return 6;
@@ -707,10 +704,16 @@ int FailFilter(const vector<cpputil::Segments>& frag,
 
   // alignment filter
   int XS;
-  if (opt.max_frac_prim_AS < 1.0 and not (*seg)[1-cidx].GetIntTag("XS", XS)) {
+  bool has_XS_tag;
+  if ((*seg).size() == 2 and methyl) {
+    has_XS_tag = (*seg)[1-cidx].GetIntTag("XS", XS);
+  } else {
+    has_XS_tag = (*seg)[0].GetIntTag("XS", XS);
+  }
+  if (opt.max_frac_prim_AS < 1.0 and not has_XS_tag) {
     for (unsigned ii =0; ii < (*seg).size(); ++ii) {
       if (methyl && ii == cidx) continue;
-      int rid = (*seg)[ii].FirstFlag() ? 0 : 1;
+//      int rid = (*seg)[ii].FirstFlag() ? 0 : 1;
       int primary_score = 0, sec_as=0;
       mem_alnreg_v ar;
       ar = mem_align1(bwa.GetMemOpt(), bwa.GetIndex()->bwt, bwa.GetIndex()->bns, bwa.GetIndex()->pac,

@@ -25,6 +25,8 @@ int GetProtectedStrandOrientation(const cpputil::Segments& segs) {
     uint8_t* xm1 = bam_aux_get(segs[0].raw(),"XM");
     if (!xm1) {
       protected_strand_orientation = int(segs[0].ReverseFlag()) + 1;
+    } else {
+      protected_strand_orientation = 2 - int(segs[0].ReverseFlag());
     }
   }
   return protected_strand_orientation;

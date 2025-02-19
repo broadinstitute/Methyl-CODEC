@@ -965,9 +965,9 @@ void ErrorRateDriver(vector<cpputil::Segments>& frag,
           string methyl_tag;
           seg[cidx].GetZTag("XM", methyl_tag);
           for (size_t i = 0; i < var.alt_seq.size(); ++i) {
-            if (seg[cidx].FirstFlag()) {
+            if (var.first_of_pair and seg[cidx].FirstFlag()) {
               meth_char[i] = methyl_tag[var.r1_start + i];
-            } else {
+            } else if (not var.first_of_pair and not seg[cidx].FirstFlag()) {
               meth_char[i] = methyl_tag[var.r2_start + i];
             }
           }
@@ -1230,7 +1230,9 @@ int codec_accuracy(int argc, char ** argv) {
           //std::cerr << frag[0][0] << " already faile" << std::endl;
           continue;
         }
-        cpputil::ResolveCT_GA_bases_MSPairedReads(ref, isf.bamheader(), frag);
+        if (frag.size() == 2) {
+          cpputil::ResolveCT_GA_bases_MSPairedReads(ref, isf.bamheader(), frag);
+        }
 
         int pair_nmismatch = 0, olen = 0;
         float nqpass;

@@ -584,6 +584,11 @@ int IsCorrectMSPairedReads2(const Segments& seg, const TScoringScheme& ss, const
 int GetConvertStrandIndex(const Segments& seg) {
   int xc1, xc2;
   int cidx = -1;
+  if (seg.size() == 1) {
+    bool xc1_flag = seg[0].GetIntTag("XC", xc1);
+    if (xc1_flag && xc1 == 1) return 0;
+    else return -1;
+  }
   bool xc1_flag = seg[0].GetIntTag("XC", xc1);
   bool xc2_flag = seg[1].GetIntTag("XC", xc2);
   if (xc1_flag and xc2_flag and xc1+xc2 == 1) {
